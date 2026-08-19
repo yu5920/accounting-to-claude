@@ -1,0 +1,26 @@
+{
+  "_note": "Which project/product each account belongs to. Empty is fine to start: the GP-by-project topic simply stays empty until a company is listed here. Keys under 'companies' are the 'short' names from build-data.mjs.",
+  "_revenueBasis": "recognised",
+  "_sharedCostMethod": "revenue-share",
+
+  "_example": {
+    "_readme": [
+      "Copy this block, rename it to a company short name, and fill it in.",
+      "revenue: account code -> project name. An account not listed keeps its own name as the project.",
+      "cost:    account code -> project name, or an object of weights that split it across projects.",
+      "Any cost account NOT listed is treated as shared and allocated by revenue share.",
+      "Allocation carries no information - it forces every project to the company margin.",
+      "The dashboard shows what share of costs is directly attributed. Push that number up."
+    ],
+    "revenue": {
+      "500-0000": "Product A",
+      "501-0000": "Product B"
+    },
+    "cost": {
+      "600-0000": "Product A",
+      "610-0000": { "Product A": 65, "Product B": 35 }
+    }
+  },
+
+  "companies": {}
+}

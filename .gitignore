@@ -1,0 +1,21 @@
+# Node
+node_modules/
+
+# Anything the pipeline generates from real books - these hold live financial
+# data (ledger entries, bank balances, customer names). They are outputs, not
+# source, and must never be committed.
+dashboard-data.json
+dashboard.html
+site/
+refresh-log.txt
+
+# Company-specific content, optional by design. Keep local.
+review.html
+questions.json
+
+# Credentials for the static-host build. Never commit.
+site-credentials.bat
+.env
+
+# Packaged skill
+*.skill
