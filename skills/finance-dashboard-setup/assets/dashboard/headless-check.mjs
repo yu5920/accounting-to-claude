@@ -1,7 +1,7 @@
 // Runs the dashboard's own script in Node against a minimal DOM stub, so render
 // errors surface without a browser. Exercises every topic, the period presets,
 // the comparison modes, and the ledger search / sort / paging.
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import vm from "node:vm";
 
 const html = readFileSync("dashboard.html", "utf8");
@@ -360,11 +360,7 @@ try {
 // until someone maps accounts to projects. Only assert the table when it should
 // exist - a check that fails on a correct default trains people to ignore it.
 const MAPPED = Object.keys(
-  JSON.parse(existsSync("project-map.json")
-    ? readFileSync("project-map.json", "utf8")
-    : existsSync("project-map.example.json")
-      ? readFileSync("project-map.example.json", "utf8")
-      : '{"companies":{}}').companies || {}).length;
+  JSON.parse(readFileSync("project-map.json", "utf8")).companies || {}).length;
 
 try {
   run('topic = "product"; render();');

@@ -1,14 +1,13 @@
 {
-  "_note": "Which project/product each account belongs to. Empty is fine to start: the GP-by-project topic simply stays empty until a company is listed here. Keys under 'companies' are the 'short' names from build-data.mjs.",
+  "_note": "Which project/product each account belongs to. Empty is fine to start: the GP-by-project topic simply stays empty until a company is listed here. Keys under 'companies' are the 'short' names from build-data-cloud.mjs.",
   "_revenueBasis": "recognised",
-  "_sharedCostMethod": "revenue-share",
-
+  "_sharedCostMethod": "direct-only",
   "_example": {
     "_readme": [
       "Copy this block, rename it to a company short name, and fill it in.",
       "revenue: account code -> project name. An account not listed keeps its own name as the project.",
       "cost:    account code -> project name, or an object of weights that split it across projects.",
-      "Any cost account NOT listed is treated as shared and allocated by revenue share.",
+      "Any cost account NOT listed is treated as shared.",
       "Allocation carries no information - it forces every project to the company margin.",
       "The dashboard shows what share of costs is directly attributed. Push that number up."
     ],
@@ -18,9 +17,14 @@
     },
     "cost": {
       "600-0000": "Product A",
-      "610-0000": { "Product A": 65, "Product B": 35 }
+      "610-0000": {
+        "Product A": 65,
+        "Product B": 35
+      }
     }
   },
-
+  "_decisions": [
+    "把每个判断的依据和日期写在这里，下次才知道当初为什么这样设。"
+  ],
   "companies": {}
 }

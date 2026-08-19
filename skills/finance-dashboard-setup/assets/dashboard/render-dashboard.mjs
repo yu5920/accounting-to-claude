@@ -4,7 +4,7 @@
 // the left, and one topic in view at a time. Every topic ends with its own
 // transaction ledger - searchable, sortable, paged - so any figure on screen
 // can be traced to the documents behind it.
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 
 const IN = process.argv[2] || "dashboard-data.json";
 const OUT = process.argv[3] || "dashboard.html";
@@ -13,19 +13,7 @@ const DATA = readFileSync(IN, "utf8");
 // ledger: which costs vary with volume, and which project each cost belongs to.
 // Both live in editable JSON so they can be corrected without touching code.
 const COST_RULES = readFileSync("cost-rules.json", "utf8");
-// project-map.json is per-install and gitignored, so a fresh clone will not have
-// one. Fall back to the committed example, then to an empty map - the GP-by-project
-// topic is designed to stay blank until someone fills it in, so "missing" is a
-// normal state, not an error.
-function loadProjectMap(readFileSync, existsSync) {
-  for (const f of ["project-map.json", "project-map.example.json"]) {
-    if (existsSync(f)) {
-      try { return readFileSync(f, "utf8"); } catch { /* try the next one */ }
-    }
-  }
-  return JSON.stringify({ companies: {} });
-}
-const PROJECT_MAP = loadProjectMap(readFileSync, existsSync);
+const PROJECT_MAP = readFileSync("project-map.json", "utf8");
 const parsed = JSON.parse(DATA);
 const liveCount = parsed.companies.filter((c) => !c.failed).length;
 const txnCount = parsed.companies.reduce((s, c) => s + ((c.txns || []).length), 0);
