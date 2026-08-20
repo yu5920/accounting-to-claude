@@ -222,6 +222,7 @@ main{min-width:0}
 .vhead{margin-bottom:14px}
 .vhead h2{font-size:19px;letter-spacing:-.01em}
 /* Chinese title sits beside the English one, quieter and smaller. */
+.h3zh{margin-left:7px;font-size:12px;font-weight:500;color:var(--ink-3)}
 .h2zh{margin-left:9px;font-size:13px;font-weight:500;color:var(--ink-3);letter-spacing:0}
 .vhead p{margin:3px 0 0;color:var(--ink-3);font-size:13px;max-width:76ch}
 .asat{display:inline-block;font-size:10px;font-weight:700;letter-spacing:.05em;
@@ -342,6 +343,8 @@ main{min-width:0}
 /* A drillable row in the detail panel: level one lists the accounts, and each
    one opens its own documents. */
 tr.drill{cursor:pointer}
+.othersrow td{background:var(--surface-2)}
+.othersrow td.first .nm{color:var(--accent)}
 tr.drill:hover{background:var(--accent-wash)}
 tr.drill td.first .nm{color:var(--accent);font-weight:600}
 .figback{font-weight:600}
@@ -486,6 +489,12 @@ var openFig = null;   // {line, acc, ym} whose detail panel is showing
 // Which cash-flow matrices have had their "其他 N 个科目" row opened up.
 // Keyed "in"/"out" so the two tables expand independently.
 var cfOpen = {};
+// Which counterparty's open documents are showing, and on which side.
+// { kind: "ar" | "ap", name: "..." }
+var openParty = null;
+// The Customers page lists the top 15 and folds the rest into one row; this
+// says whether that row has been opened.
+var custAll = false;
 var led = {};
 
 // open starts false: a page that lands on two hundred journal rows buries
@@ -610,6 +619,108 @@ function docsOf(list, months, field) {
   });
   return out;
 }
+// Every document still carrying a balance, regardless of the period filter.
+// Outstanding is a position as at today: an invoice raised before the selected
+// months is still unpaid money, and hiding it because of a date filter would
+// understate what is owed.
+function openDocsOf(list, field) {
+  var out = [];
+  list.forEach(function (c) {
+    var parties = c.parties || [];
+    (c[field] || []).forEach(function (d) {
+      if (!(d[5] > 0)) return;
+      out.push({ co: c.short, date: d[0], doc: d[1], party: parties[d[2]] || "(unnamed)",
+                 due: d[3], total: d[4], outs: d[5], late: d[6], desc: d[7] });
+    });
+  });
+  return out;
+}
+
+// Folds those documents up to one row per counterparty. Oldest overdue is the
+// worst document, not an average - an average would hide a two-year-old invoice
+// behind a pile of recent ones.
+function partyOutstanding(docs) {
+  var by = {};
+  docs.forEach(function (d) {
+    var k = d.co + "\u0000" + d.party;
+    var e = by[k] || (by[k] = { co: d.co, name: d.party, outs: 0, docs: 0, late: -1e9 });
+    e.outs += d.outs; e.docs++;
+    if (d.late > e.late) e.late = d.late;
+  });
+  return Object.keys(by).map(function (k) { return by[k]; })
+    .sort(function (x, y) { return y.outs - x.outs; });
+}
+
+// Shared by Receivables and Payables: the same question, two directions.
+function outstandingPanel(list, kind, field, labelEn, labelZh) {
+  var docs = openDocsOf(list, field);
+  var rows = partyOutstanding(docs);
+  var total = sum(rows, function (r) { return r.outs; });
+
+  if (!rows.length) {
+    return '<section class="card"><h3>' + esc(labelEn) + ' <span class="h3zh">' +
+      esc(labelZh) + '</span></h3><p class="empty">' +
+      'Nothing outstanding. 目前没有未结清的单据。</p></section>';
+  }
+
+  // Level 2: one counterparty's own documents.
+  if (openParty && openParty.kind === kind) {
+    var mine = docs.filter(function (d) { return d.party === openParty.name; })
+      .sort(function (x, y) { return y.late - x.late; });
+    var mineTot = sum(mine, function (d) { return d.outs; });
+    return '<section class="card"><h3>' +
+      '<button class="lnk figback" type="button" data-partyback="1">← ' + esc(labelEn) +
+      '</button> · ' + esc(openParty.name) + '</h3>' +
+      '<p class="hint">' + mine.length + ' open document(s) 张未结清 · RM ' + rm(mineTot) +
+      '</p><div class="tscroll"><table class="dtab"><thead><tr>' +
+      '<th class="first">' + bi("Doc no", "单号") + '</th>' +
+      '<th>' + bi("Date", "日期") + '</th>' +
+      '<th>' + bi("Due", "到期日") + '</th>' +
+      '<th class="num">' + bi("Doc total", "单据金额") + '</th>' +
+      '<th class="num">' + bi("Outstanding", "未结") + '</th>' +
+      '<th class="num">' + bi("Days overdue", "逾期天数") + '</th>' +
+      '</tr></thead><tbody>' + mine.map(function (d) {
+        return '<tr class="' + (d.late > 90 ? "late" : "") + '">' +
+          '<td class="first mono">' + esc(d.doc) + '</td>' +
+          '<td class="mono">' + esc(d.date) + '</td>' +
+          '<td class="mono">' + esc(d.due) + '</td>' +
+          '<td class="num">' + rm(d.total) + '</td>' +
+          '<td class="num"><b>' + rm(d.outs) + '</b></td>' +
+          '<td class="num ' + (d.late > 0 ? "neg" : "") + '">' +
+          (d.late > 0 ? d.late : "Not due 未到期") + '</td></tr>';
+      }).join("") +
+      '<tr class="sub"><td class="first">' + bi("Total", "合计") + '</td><td></td><td></td>' +
+      '<td></td><td class="num">' + rm(mineTot) + '</td><td></td></tr>' +
+      '</tbody></table></div></section>';
+  }
+
+  // Level 1: one row per counterparty - who owes, how much, how late.
+  return '<section class="card"><h3>' + esc(labelEn) + ' <span class="h3zh">' +
+    esc(labelZh) + '</span></h3>' +
+    '<p class="hint">As at today, period filter does not apply. 当下位置，不随期间变动。' +
+    ' Click a name to see its documents. 点名字看单据。</p>' +
+    '<div class="tscroll"><table class="dtab"><thead><tr>' +
+    '<th class="first">' + bi(kind === "ar" ? "Customer" : "Supplier",
+                              kind === "ar" ? "客户" : "供应商") + '</th>' +
+    '<th class="num">' + bi("Outstanding", "未结金额") + '</th>' +
+    '<th class="num">' + bi("Docs", "张数") + '</th>' +
+    '<th class="num">' + bi("Oldest overdue", "最久逾期") + '</th>' +
+    '</tr></thead><tbody>' + rows.map(function (r) {
+      return '<tr class="drill' + (r.late > 90 ? " late" : "") +
+        '" data-party="' + esc(r.name) + '" data-pkind="' + kind + '">' +
+        '<td class="first"><span class="mono">' + esc(r.co) + '</span> ' +
+        '<span class="nm">' + esc(r.name) + '</span></td>' +
+        '<td class="num"><b>' + rm(r.outs) + '</b></td>' +
+        '<td class="num">' + r.docs + '</td>' +
+        '<td class="num ' + (r.late > 0 ? "neg" : "") + '">' +
+        (r.late > 0 ? r.late + " days 天" : "Not due 未到期") + '</td></tr>';
+    }).join("") +
+    '<tr class="sub"><td class="first">' + bi("Total", "合计") + '</td>' +
+    '<td class="num">' + rm(total) + '</td>' +
+    '<td class="num">' + sum(rows, function (r) { return r.docs; }) + '</td>' +
+    '<td></td></tr></tbody></table></div></section>';
+}
+
 function slDocsOf(list, months) {
   var lo = months[0], hi = months[months.length - 1] + "-99";
   var out = [];
@@ -785,9 +896,18 @@ function sparkline(map, months) {
       '" height="' + h + '" rx="1"></rect>'; }).join("") + '</svg>';
 }
 function accTable(rows, months, cm, opts) {
-  if (!rows.length) return '<p class="empty">期间内没有资料。</p>';
+  if (!rows.length) return '<p class="empty">No data in this period 期间内没有资料。</p>';
   var max = Math.max.apply(null, rows.map(function (r) { return Math.abs(r.cur); }).concat([1]));
   var grand = sum(rows, function (r) { return r.cur; });
+
+  // opts.topN folds everything past the first N into a single row. A list of
+  // three hundred customers is not a finding; the top of it plus a number for
+  // the tail is. The folded row opens, so nothing becomes unreachable.
+  var tail = null;
+  if (opts.topN && rows.length > opts.topN + 1 && !opts.expanded) {
+    tail = rows.slice(opts.topN);
+    rows = rows.slice(0, opts.topN);
+  }
   return '<div class="tscroll"><table class="dtab"><thead><tr><th class="first">' + esc(opts.head) +
     '</th><th class="num">' + bi("This period", "本期") + '</th><th></th><th>' + bi("Trend", "走势") + '</th><th class="num">' + bi("Share", "占比") + '</th>' +
     (cm ? '<th class="num">' + esc(cmpLabel()) + '</th><th class="num">' + bi("Change", "变化") + '</th>' : "") +
@@ -804,7 +924,23 @@ function accTable(rows, months, cm, opts) {
           (d === null ? '<span class="delta">—</span>'
             : '<span class="delta ' + (d >= 0 ? "up" : "down") + '">' +
               (d >= 0 ? "+" : "") + d.toFixed(0) + '%</span>') + '</td>' : "") + '</tr>';
-    }).join("") + '<tr class="tot"><td class="first">合计</td><td class="num">' + rm(grand) +
+    }).join("") +
+    (tail ? '<tr class="drill othersrow" data-custall="1">' +
+      '<td class="first"><span class="nm">Others 其他 ' + tail.length + ' ' +
+      (opts.unit || "") + '</span><span class="sub2">' +
+      'click to show all 点开看全部</span></td>' +
+      '<td class="num">' + rm(sum(tail, function (r) { return r.cur; })) + '</td>' +
+      '<td class="barcell"><span class="lbar ' + (opts.cost ? "cost" : "") + '" style="width:' +
+        ((Math.abs(sum(tail, function (r) { return r.cur; })) / max) * 100) + '%"></span></td>' +
+      '<td></td><td class="num">' +
+      (grand ? ((sum(tail, function (r) { return r.cur; }) / grand) * 100).toFixed(0) : 0) + '%</td>' +
+      (cm ? '<td class="num muted">' + rm(sum(tail, function (r) { return r.cmp; })) +
+        '</td><td></td>' : "") + '</tr>' : "") +
+    (opts.topN && opts.expanded
+      ? '<tr class="drill othersrow" data-custall="1"><td class="first" colspan="' +
+        (cm ? 7 : 5) + '">▾ Collapse to top ' + opts.topN + ' 收合回前 ' + opts.topN + '</td></tr>'
+      : "") +
+    '<tr class="tot"><td class="first">' + bi("Total", "合计") + '</td><td class="num">' + rm(grand) +
     '</td><td></td><td></td><td class="num">100%</td>' +
     (cm ? '<td class="num">' + rm(sum(rows, function (r) { return r.cmp; })) + '</td><td></td>' : "") +
     '</tr></tbody></table></div>';
@@ -1581,7 +1717,8 @@ function viewAr(list, months) {
           ' <span class="muted">未收 RM ' + rm(c.ar.total) + ' · DSO ' +
           (d === null ? "—" : Math.round(d) + " 天") + '</span></h5>' + ageBar(c.ar) + '</div>';
       }).join("") + '</div></section>' +
-    ledger("ar", "销售单据", "期间内开出的所有发票，含已结清的。未结的用红字标出。",
+    outstandingPanel(list, "ar", "arDocs", "Outstanding by customer", "客户未收明细") +
+    ledger("ar", "All sales documents 销售单据", "期间内开出的所有发票，含已结清的 —— 预设收起。",
       [COLS.date, COLS.co, COLS.doc, COLS.party, COLS.desc, COLS.due, COLS.total,
        COLS.outs, COLS.late], docsOf(list, months, "arDocs"));
 }
@@ -1598,19 +1735,8 @@ function viewAp(list, months) {
       return '<div><h5 style="font-size:12.5px;margin-bottom:6px">' + esc(c.short) +
         ' <span class="muted">未付 RM ' + rm(c.ap.total) + '</span></h5>' + ageBar(c.ap) + '</div>';
     }).join("") + '</div></section>' +
-    '<section class="card"><h3>供应商未付排行</h3><div class="tscroll"><table class="dtab">' +
-    '<thead><tr><th class="first">' + bi("Company · Supplier", "公司·供应商") + '</th><th class="num">' + bi("Outstanding", "未付") + '</th><th class="num">' + bi("Docs", "张数") + '</th>' +
-    '<th class="num">' + bi("Oldest overdue", "最久逾期") + '</th></tr></thead><tbody>' +
-    [].concat.apply([], list.map(function (c) {
-      return (c.topCreditors || []).map(function (r) { return { co: c.short, r: r }; }); }))
-      .sort(function (x, y) { return y.r.owing - x.r.owing; }).map(function (x) {
-        return '<tr class="' + (x.r.late > 90 ? "late" : "") + '"><td class="first">' +
-          '<span class="mono">' + esc(x.co) + '</span> ' + esc(x.r.name) + '</td>' +
-          '<td class="num"><b>' + rm(x.r.owing) + '</b></td><td class="num">' + x.r.docs + '</td>' +
-          '<td class="num ' + (x.r.late > 0 ? "neg" : "") + '">' +
-          (x.r.late > 0 ? x.r.late + " 天" : "未到期") + '</td></tr>'; }).join("") +
-    '</tbody></table></div></section>' +
-    ledger("ap", "采购单据", "期间内收到的所有供应商发票，含已付清的。",
+    outstandingPanel(list, "ap", "apDocs", "Outstanding by supplier", "供应商未付明细") +
+    ledger("ap", "All purchase documents 采购单据", "期间内收到的所有供应商发票，含已付清的 —— 预设收起。",
       [COLS.date, COLS.co, COLS.doc, COLS.party, COLS.desc, COLS.due, COLS.total,
        COLS.outs, COLS.late], docsOf(list, months, "apDocs"));
 }
@@ -1653,7 +1779,11 @@ function viewCust(list, months, cm) {
         Math.round(r.share * 100) + '%</td><td class="num">' + Math.round(r.top3 * 100) + '%</td>' +
         '<td class="num">' + r.n + '</td></tr>'; }).join("")
       : '<tr><td class="empty">期间内没有开单记录。</td></tr>') + '</tbody></table></div></section>' +
-    '<section class="card"><h3>客户开单排行</h3>' + accTable(custRows, months, cm, { head: "公司 · 客户" }) +
+    '<section class="card"><h3>Customer billings <span class="h3zh">客户开单排行</span></h3>' +
+    '<p class="hint">Top 15 by billing; the rest are folded into one row you can open. ' +
+    '依开单额排前 15，其余折成一列，可点开。</p>' +
+    accTable(custRows, months, cm,
+      { head: "Company · Customer 公司·客户", topN: 15, expanded: custAll, unit: "customers 客户" }) +
     '</section>' +
     ledger("cust", "客户单据", "期间内开给客户的每一张发票。",
       [COLS.date, COLS.co, COLS.doc, COLS.party, COLS.desc, COLS.total, COLS.outs, COLS.late],
@@ -2463,6 +2593,7 @@ document.getElementById("cCmp").addEventListener("click", function (e) {
 });
 document.getElementById("rail").addEventListener("click", function (e) {
   var b = e.target.closest("button[data-topic]");
+  if (b) { openParty = null; }
   if (!b) return;
   topic = b.dataset.topic;
   closeLineage();
@@ -2496,6 +2627,16 @@ document.getElementById("view").addEventListener("click", function (e) {
     render();
     return;
   }
+  // Receivables / Payables: open one counterparty's documents, and back again.
+  var pr = e.target.closest("tr[data-party]");
+  if (pr) {
+    openParty = { kind: pr.dataset.pkind, name: pr.dataset.party };
+    render();
+    return;
+  }
+  if (e.target.closest("[data-partyback]")) { openParty = null; render(); return; }
+  // Customers: the folded "others" row opens into the full list.
+  if (e.target.closest("[data-custall]")) { custAll = !custAll; render(); return; }
   // Level 2 -> level 1.
   if (e.target.closest("[data-figback]") && openFig) {
     openFig = { line: openFig.line, acc: "", ym: openFig.ym };

@@ -403,6 +403,64 @@ try {
   run('openFig = null; render();');
 } catch (e) { fail("成本结构 threw: " + e.message); }
 
+// Receivables / Payables: one row per counterparty first, its documents second.
+["ar", "ap"].forEach((kind) => {
+  try {
+    run('openParty = null; topic = "' + kind + '"; render();');
+    const v1 = sinks.view;
+    const partyRows = (v1.match(/<tr class="drill[^"]*" data-party="/g) || []).length;
+    if (!partyRows) {
+      // An empty side is a fact about the books, not a failure - but it must say
+      // so rather than render a blank card.
+      if (/Nothing outstanding/.test(v1))
+        pass(kind + " 未清列表：没有未结清单据，页面明确说明");
+      else fail(kind + " 未清列表既没有资料也没有说明");
+      return;
+    }
+    if (/<th[^>]*>[\s\S]{0,60}Days overdue/.test(v1))
+      fail(kind + " level 1 就显示了单据明细，没有分层");
+    else pass(kind + " 未清 level 1：" + partyRows + " 个对象，只有汇总");
+
+    const who = (v1.match(/data-party="([^"]+)"/) || [])[1];
+    run('openParty = { kind: "' + kind + '", name: ' + JSON.stringify(who) + ' }; render();');
+    const v2 = sinks.view;
+    const docRows = (v2.match(/<td class="first mono">/g) || []).length;
+    if (docRows && /data-partyback/.test(v2))
+      pass(kind + " 未清 level 2：" + docRows + " 张单据，有返回");
+    else fail(kind + " 未清 level 2 没有单据或没有返回");
+    run('openParty = null; render();');
+  } catch (e) { fail(kind + " 未清面板 threw: " + e.message); }
+});
+
+// Outstanding must ignore the period filter - it is a position, not a flow.
+try {
+  run('openParty = null; applyPreset("6"); topic = "ar"; render();');
+  const six = (sinks.view.match(/data-party="/g) || []).length;
+  run('applyPreset("all"); topic = "ar"; render();');
+  const all = (sinks.view.match(/data-party="/g) || []).length;
+  if (six === all) pass("未清不随期间变动（近 6 月与全部都是 " + all + " 个对象）");
+  else fail("未清被期间筛选影响了：近 6 月 " + six + " vs 全部 " + all);
+  run('applyPreset("12"); render();');
+} catch (e) { fail("未清期间独立性 threw: " + e.message); }
+
+// Customers: top 15, with the tail folded into one row that opens.
+try {
+  run('custAll = false; topic = "cust"; render();');
+  const c1 = sinks.view;
+  const folded = /data-custall/.test(c1);
+  const named = (c1.match(/Others 其他 (\d+)/) || [])[1];
+  if (!folded) {
+    pass("客户列表未折叠（客户数不足 15，属正常）");
+  } else {
+    const before = (c1.match(/<tr(?![^>]*class="tot")[^>]*><td class="first"><span class="nm">/g) || []).length;
+    run('custAll = true; render();');
+    const after = (sinks.view.match(/<tr(?![^>]*class="tot")[^>]*><td class="first"><span class="nm">/g) || []).length;
+    if (after > before) pass("客户 Others 可展开：" + before + " → " + after + " 列（其余 " + named + " 个客户）");
+    else fail("客户 Others 点开后列数没有增加：" + before + " → " + after);
+    run('custAll = false; render();');
+  }
+} catch (e) { fail("客户 Others threw: " + e.message); }
+
 // project-map.json ships empty, so this topic legitimately has nothing to show
 // until someone maps accounts to projects. Only assert the table when it should
 // exist - a check that fails on a correct default trains people to ignore it.
