@@ -1,16 +1,22 @@
 {
   "_note": "Copy to profile.json in this folder and fill in. profile.json is gitignored - it names the company and its books, so it stays per-install. Credentials do NOT go here; they live in ../mcp-server/.env",
-
   "brand": "Your Company Name",
   "system": "autocount-cloud",
-
   "books": [
-    { "id": "12345", "short": "ABC", "name": "ABC Sdn Bhd", "tier": "active" }
+    {
+      "id": "12345",
+      "short": "ABC",
+      "name": "ABC Sdn Bhd",
+      "tier": "active"
+    }
   ],
-
   "_groupHintsNote": "Name fragments that suggest a counterparty inside the same group. Flagged in the UI, never asserted. Empty is a fine default.",
   "groupHints": [],
-
   "months": 37,
-  "refreshTime": "08:00"
+  "refreshTime": "08:00",
+  "_creditTermNote": "Days of credit. Required for the file-import route: aging reports bucket by months since invoice and carry no due date, so nothing else can say what is actually overdue. Ask the user - never assume 30.",
+  "creditTermDays": {
+    "ar": 30,
+    "ap": 30
+  }
 }

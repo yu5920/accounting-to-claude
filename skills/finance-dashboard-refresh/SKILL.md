@@ -5,6 +5,33 @@ description: dashboard 的每日自动刷新 —— Mac 用 launchd、Windows �
 
 # Dashboard 每日刷新
 
+## 先确认你在哪条路线
+
+```bash
+node -e 'console.log(require("./dashboard-data.json").source)'   # 在 $DASH 里跑
+```
+
+| 输出 | 路线 |
+|---|---|
+| `file-import` | **汇出档**（Excel / CSV）—— 见下方「汇入路线」段 |
+| `autocount-cloud-api` 或其他 | **直连**（API / 资料库） |
+
+### 汇入路线没有「自动刷新」
+
+下面整篇讲的是直连路线的排程（launchd / 工作排程器）。
+**汇出档路线用不上** —— 没有连线可以定时去抓。
+
+汇入路线的更新方式就是**丢新档进来再跑一次**：
+
+```bash
+cd "$DASH" && node build-data-file.mjs /path/to/exports/ && node render-dashboard.mjs && node headless-check.mjs
+```
+
+新鲜度 = 上次汇出的日期，**不是今天**。这点要跟老板讲清楚，
+不然他会以为看到的是即时数字。
+
+---
+
 ## 先找到工作目录
 
 这个 skill 里的 `$DASH` 和 `$MCP` 是变数，不是字面路径 —— 每个客户装的位置不一样。

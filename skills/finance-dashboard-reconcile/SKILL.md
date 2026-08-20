@@ -5,6 +5,33 @@ description: 把 dashboard 的数字，跟会计软体自己出的 Profit & Loss
 
 # AutoCount Cloud 对帐验证
 
+## 先确认你在哪条路线
+
+```bash
+node -e 'console.log(require("./dashboard-data.json").source)'   # 在 $DASH 里跑
+```
+
+| 输出 | 路线 |
+|---|---|
+| `file-import` | **汇出档**（Excel / CSV）—— 见下方「汇入路线」段 |
+| `autocount-cloud-api` 或其他 | **直连**（API / 资料库） |
+
+### 汇入路线的验证方法不一样
+
+下面整篇讲的是直连路线（拿会计软体的 P&L 对 API 重构出来的数字）。
+**汇出档路线的黄金验证是另一个，而且更强：**
+
+**借方总额必须等于贷方总额。** 对不上就是解析漏了或重复了，不要往下做。
+
+⚠️ **一定要三份分类帐都给。** SQL Accounting 把分录拆成 General / Sales / Purchase 三种
+ledger type，General Ledger **刻意不含**客户和供应商的分录。单读一份必定不平 ——
+实测差 453,475，看起来像解析坏了，其实只是少给了两份。三份合起来差 0。
+
+其余仍然适用：**先预测再验证**、**不准用调参数的同一个月验证**、
+以及拿客户自己的 P&L / Balance Sheet 核对。
+
+---
+
 ## 先找到工作目录
 
 这个 skill 里的 `$DASH` 和 `$MCP` 是变数，不是字面路径 —— 每个客户装的位置不一样。

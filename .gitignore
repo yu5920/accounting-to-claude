@@ -44,3 +44,7 @@ com.*.dashboard-refresh.plist
 
 # macOS noise
 .DS_Store
+
+# Sample exports for building the file-based route: real ledger data.
+exports-sample/
+../exports-sample/

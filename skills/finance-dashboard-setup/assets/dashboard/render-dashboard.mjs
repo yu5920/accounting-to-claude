@@ -1269,7 +1269,12 @@ function topicInsight(topic, list, months) {
       var v = overM(a.m, months); if (v > 0) rows.push({ n: a.name, v: v }); }); });
     rows.sort(function (a, b) { return b.v - a.v; });
     var gt = sum(rows, function (r) { return r.v; });
-    if (!rows.length) { head = "No billing in this period"; out.push("期间内没有开单记录。"); }
+    if (!rows.length) {
+      head = "No customer billing in this data";
+      out.push("0 customers with billing across " + months.length +
+        " month(s) — this route reads the ledger, and customer-level billing needs " +
+        "invoice detail 这条资料来源没有客户开单明细");
+    }
     else {
       var share = rows[0].v / gt;
       head = share > 0.5 ? "One customer carries the period"
@@ -1286,9 +1291,12 @@ function topicInsight(topic, list, months) {
     list.forEach(function (c) {
       if ((PMAP.companies || {})[c.short]) mapped++; });
     if (!mapped) {
+      var revN = list.reduce(function (t, c) { return t + (c.revenueAccounts || []).length; }, 0);
       head = "Product margin is not set up yet";
-      out.push("This page stays blank until accounts are mapped to product lines — " +
-        "an empty page is the honest default 尚未设定产品对照，页面刻意留白");
+      out.push(revN + " revenue account(s) available to group into product lines; " +
+        "0 mapped so far 可分组的营收科目数");
+      out.push("The page stays blank until they are mapped — an empty page is the honest " +
+        "default 尚未设定产品对照，页面刻意留白");
     } else {
       var d = projectRows(list[0], months);
       head = d && d.direct >= 0.5 ? "Most cost is directly attributed"
@@ -1322,7 +1330,11 @@ function topicInsight(topic, list, months) {
       out.push(money(dt) + " sitting in deferred/deposit accounts — cash already collected, " +
         "revenue not yet earned 已收未交付");
       out.push("This is the closest thing here to locked-in future revenue 最接近「已锁定未来收入」的数字");
-    } else { head = "No deferred balance"; out.push("没有预收性质的负债余额。"); }
+    } else {
+      head = "No deferred balance";
+      out.push((list[0] && (list[0].liabilities || []).length) + " liability account(s) carried, " +
+        "none of them deferred or deposit in nature 没有预收性质的负债科目");
+    }
   } else if (topic === "lines") {
     var ls = [];
     list.forEach(function (c) { (c.serviceLines || []).forEach(function (a) {
@@ -1338,7 +1350,12 @@ function topicInsight(topic, list, months) {
         money(sum(defl, function (r) { return r.v; })) +
         " — billed but not revenue 开在负债科目，不算营收");
       out.push("Cost cannot be split to service lines, so this is revenue only 成本拆不到服务线，这里只有收入");
-    } else { head = "No billing lines in this period"; out.push("期间内没有开单明细。"); }
+    } else {
+      head = "No service-line detail in this data";
+      out.push("0 of " + (list[0] ? (list[0].txns || []).length : 0) +
+        " postings carry invoice-line detail — this needs per-line accounts, which a " +
+        "ledger export does not provide 汇出的分类帐没有发票明细行");
+    }
   } else if (topic === "alerts") {
     var al = buildAlerts(list, months);
     var n = al.collect.length + al.cash.length + al.trend.length + al.conc.length;

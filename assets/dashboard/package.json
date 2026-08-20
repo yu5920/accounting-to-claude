@@ -1,0 +1,10 @@
+{
+  "name": "finance-dashboard-pipeline",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Builds dashboard-data.json and renders the dashboard. Only the file-import route needs a dependency; the live-connection routes have none.",
+  "dependencies": {
+    "xlsx": "^0.18.5"
+  }
+}

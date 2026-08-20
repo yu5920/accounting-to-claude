@@ -32,6 +32,19 @@ description: 从零把一家公司的会计软体接成老板每天早上会打�
 
 ---
 
+## Step 0 前置 — 先问一句，再决定要不要往下走
+
+**第一句就问：「你们的帐现在放在哪里？」**
+
+答案是**「没有会计软体」/「只有会计给的报表」/「只有 Excel」** ——
+**立刻转到 `finance-dashboard-import`，不要再问任何一题。**
+
+不要问作业系统、不要问哪套软体、不要问资料库在哪、不要提 API。
+那些对他一题都不适用，问了只会让他以为自己走错地方。
+`finance-dashboard-import` 是完整入口，会自己处理安装。
+
+有软体才继续往下。
+
 ## Step 0 — 先侦测，别问
 
 自己跑，不要问他：
@@ -119,10 +132,16 @@ cd <工作目录>/mcp-server && npm install
 读 `references/sql-accounting-firebird.md`。走 Firebird `isql`。
 **明白告诉他这条路没有在真实系统上验证过**，Step 5 的自测才是判准，不是你的信心。
 
-### 路线 D：其他软体
+### 路线 D：只有汇出档（没有会计软体 / 接不到）
 
-读 `references/cloud-systems.md`。弹出选项问他：厂商有没有 API？能不能定期汇出 Excel？
-两条都不行就只能手动汇出，freshness 会差 —— 讲清楚再让他选。
+**用 `finance-dashboard-import` skill**，那边有完整流程。
+
+客户只要拿得出这几份就能做：总帐 GL、应收/应付明细帐、帐龄表（都要 **Excel/CSV**），
+外加损益表和资产负债表（PDF 可以，只用来对帐）。
+
+⚠️ **走这条路一定要问「账期几天」。** 帐龄表是按「距开票日几个月」分桶的，
+没有到期日也没有信用期 —— 不知道账期就无法判断哪些是真的逾期。
+账期 60 天却把「1 MONTH」当逾期，会让老板去催根本还没到期的客户。
 
 ## Step 5 — 验证连线（不可跳过）
 
@@ -211,6 +230,7 @@ node build-data-cloud.mjs && node render-dashboard.mjs && node headless-check.mj
 
 | 想做什么 | 说 |
 |---|---|
+| 只有 Excel 汇出档 | 「我只有报表档，帮我做 dashboard」 |
 | 用中文问帐 | 「上个月营收多少」「谁欠钱最多」 |
 | 数字看起来怪 | 「帮我对帐」 |
 | 更新数字 | 「刷新 dashboard」 |

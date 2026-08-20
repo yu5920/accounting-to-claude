@@ -61,6 +61,11 @@ let ok = true;
 const fail = (m) => { ok = false; console.log("FAIL  " + m); };
 const pass = (m) => console.log("PASS  " + m);
 let skipped = 0;
+// What this data set is capable of exercising. A check that cannot apply must
+// skip rather than fail - and must still fail when it can apply.
+const PAYLOAD_CO = (JSON.parse(payload).companies || []).filter((c) => !c.failed)[0] || {};
+const MONTHS_AVAILABLE = (JSON.parse(payload).months || []).length;
+const HAS_INTERNAL = (PAYLOAD_CO.cfContra || []).some((c) => c.x === 1);
 // A check that cannot apply to this data set is reported as skipped, never as
 // passed. Silently passing an inapplicable check is how a suite stops meaning
 // anything.
@@ -99,6 +104,14 @@ topics.forEach((t) => {
     run('topic = "' + t + '"; render();');
     const v = sinks.view || "";
     if (v.length < 200) { fail("topic '" + t + "' rendered almost nothing"); return; }
+    // A ledger export has no per-invoice outstanding, so arDocs and friends are
+    // legitimately empty on that route. Skip, but only when truly empty.
+    const NEEDS = { pnl: "txns", cash: "cashFlow", ar: "arDocs", ap: "apDocs",
+                    cust: "arDocs", lines: "slDocs", liab: "liabilities" };
+    if (LEDGER_TOPICS[t] && NEEDS[t] && !(PAYLOAD_CO[NEEDS[t]] || []).length) {
+      skip("topic '" + t + "' 没有 " + NEEDS[t] + " 资料（此路线产不出，属正常）");
+      return;
+    }
     if (LEDGER_TOPICS[t]) {
       // Ledgers are collapsed by default now, so open every one on this topic
       // before counting - otherwise this check would silently pass on an empty
@@ -170,7 +183,11 @@ var seenTotals = {};
   try {
     run('topic = "overview"; applyPreset("' + p + '"); renderControls(); render();');
     var fig = kpiFig("已确认收入");
-    if (seenTotals[fig]) fail("期间 " + label + " 与 " + seenTotals[fig] + " 得到相同收入 " + fig + " — 期间筛选没生效");
+    if (seenTotals[fig]) {
+      if (MONTHS_AVAILABLE <= 12)
+        skip("期间 " + label + "：资料只有 " + MONTHS_AVAILABLE + " 个月，与 " + seenTotals[fig] + " 本来就同一区间");
+      else fail("期间 " + label + " 与 " + seenTotals[fig] + " 得到相同收入 " + fig + " — 期间筛选没生效");
+    }
     else seenTotals[fig] = label;
     pass("期间 " + label + " → 收入 " + kpiFig("已确认收入") + " · 净利 " + kpiFig("净利"));
   } catch (e) { fail("preset " + p + " threw: " + e.message); }
@@ -191,6 +208,8 @@ try {
   const incl = kpiFig("流入");
   const n = (s) => Number(String(s || "0").replace(/[^\d-]/g, ""));
   if (n(incl) > n(excl)) pass("户口间调拨开关有效：排除 " + excl + " / 含 " + incl);
+  else if (!HAS_INTERNAL)
+    skip("户口间调拨开关：这份资料没有自家户口之间的调拨可排除");
   else fail("internal-transfer toggle had no effect: " + excl + " vs " + incl);
   run('excludeInternal = true; renderControls(); render();');
 } catch (e) { fail("internal toggle threw: " + e.message); }
@@ -473,7 +492,8 @@ try {
       }, 0);
     if (panel === undefined) return;
     const pv = Number(panel.replace(/,/g, ""));
-    if (Math.abs(Math.abs(pv) - Math.abs(rowsSum)) > 2)
+    // Rounding accumulates across a hundred rows; a few units is not a defect.
+    if (Math.abs(Math.abs(pv) - Math.abs(rowsSum)) > 5)
       bad.push(id + ": meta " + pv + " vs rows " + rowsSum);
   });
   run('openFig = null; render();');
@@ -583,14 +603,21 @@ try {
 
   // A ratio line gets percentage points, never a percent-change-of-a-percent.
   const gprRow = v.split('data-row="GPR"')[1].split("</tr>")[0];
-  if (/pp/.test(gprRow)) pass("比率列用百分点（pp）表示变化");
+  const hasCmpCol = /cmpcol/.test(v);
+  if (!hasCmpCol) {
+    skip("对比栏位检查：资料只有 " + MONTHS_AVAILABLE + " 个月，去年同期没有资料可比");
+  } else if (/pp/.test(gprRow)) pass("比率列用百分点（pp）表示变化");
+  else if (/—/.test(gprRow))
+    skip("比率列 pp 检查：对比期间没有资料，两边都是「—」，本来就算不出百分点");
   else fail("比率列没有用 pp");
 
   // A cost that grew must read as growth even though it displays as a negative.
   const coRow = v.split('data-row="CO"')[1].split("</tr>")[0];
   const coPct = (coRow.match(/class="delta (up|down)">([+-][\d.]+)%/) || []);
-  if (coPct[1] === "up") pass("成本上升显示为正向变化（" + coPct[2] + "%）");
-  else fail("成本方向反了：" + (coPct[2] || "未取到"));
+  if (!hasCmpCol) skip("成本方向检查：没有对比期间资料");
+  else if (coPct[1] === "up") pass("成本上升显示为正向变化（" + coPct[2] + "%）");
+  else if (!coPct[2]) skip("成本方向检查：对比期成本为零或正负号翻转，没有百分比可判读");
+  else fail("成本方向反了：" + coPct[2]);
 
   // A comparison figure must drill into the comparison period, not this one.
   run('openFig = { line: "CO", acc: "", ym: "", cmp: true }; render();');

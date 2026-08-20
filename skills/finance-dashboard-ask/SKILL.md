@@ -5,6 +5,27 @@ description: 用中文直接问公司的会计帐（营收、客户欠款、费�
 
 # 问 AutoCount 的帐
 
+## 先确认你在哪条路线
+
+```bash
+node -e 'console.log(require("./dashboard-data.json").source)'   # 在 $DASH 里跑
+```
+
+| 输出 | 路线 |
+|---|---|
+| `file-import` | **汇出档**（Excel / CSV）—— 见下方「汇入路线」段 |
+| `autocount-cloud-api` 或其他 | **直连**（API / 资料库） |
+
+### 汇入路线用不了这个 skill
+
+这个 skill 靠只读 MCP server 直接查会计软体。**汇出档路线没有连线可查** ——
+资料是一份快照，不是活的帐。
+
+汇入路线的使用者要看数字，就看 dashboard 本身（每个数字都能点开看到背后的分录），
+或直接问关于 dashboard 上数字的问题。
+
+---
+
 ## 先找到工作目录
 
 这个 skill 里的 `$DASH` 和 `$MCP` 是变数，不是字面路径 —— 每个客户装的位置不一样。

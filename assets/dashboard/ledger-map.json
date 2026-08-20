@@ -1,0 +1,248 @@
+{
+  "_note": "Column and section labels this parser recognises. Every accounting package words its exports differently, so this is a data file, not code - a student whose export says 借方 instead of Debit adds it here and nothing else changes.",
+  "_matching": "Case-insensitive. A label matches if the cell text STARTS WITH one of these strings, after trimming. Put longer, more specific labels first.",
+  "columns": {
+    "date": [
+      "date",
+      "trans date",
+      "transaction date",
+      "doc date",
+      "日期",
+      "交易日期",
+      "单据日期"
+    ],
+    "journal": [
+      "journal",
+      "type",
+      "doc type",
+      "分录类型",
+      "类型"
+    ],
+    "ref": [
+      "ref. 1/ ref. 2",
+      "ref 1",
+      "ref.",
+      "reference",
+      "doc no",
+      "document no",
+      "单号",
+      "凭证号",
+      "参考"
+    ],
+    "description": [
+      "description",
+      "particulars",
+      "narration",
+      "remark",
+      "摘要",
+      "描述",
+      "说明"
+    ],
+    "debit": [
+      "debit",
+      "dr",
+      "借方",
+      "借"
+    ],
+    "credit": [
+      "credit",
+      "cr",
+      "贷方",
+      "贷"
+    ],
+    "balance": [
+      "balance",
+      "余额",
+      "结余"
+    ],
+    "dueDate": [
+      "due date",
+      "due",
+      "到期日",
+      "到期"
+    ],
+    "outstanding": [
+      "outstanding",
+      "o/s",
+      "unapplied",
+      "未清",
+      "未收",
+      "未付"
+    ]
+  },
+  "sectionLabels": [
+    "account code",
+    "a/c code",
+    "acc code",
+    "科目编号",
+    "科目代码",
+    "户口编号"
+  ],
+  "skipRowLabels": [
+    "balance b/f",
+    "balance c/f",
+    "b/f",
+    "c/f",
+    "承前",
+    "承上",
+    "转下",
+    "sub total",
+    "subtotal",
+    "total",
+    "合计",
+    "小计",
+    "page",
+    "continued"
+  ],
+  "_accountTypeNote": "⚠️ NEVER apply a prefix map without showing the user the account names it implies and getting confirmation. Charts differ more than they look: on the reference file 8xxx is OTHER INCOME (commission, FX gain, bank interest) while a generic guess had it as expense - which turns income into cost and inverts the P&L. inspect-ledger.mjs prints sample names per prefix precisely so this is caught by eye before anything is computed.",
+  "_agingNote": "Aging reports are a different shape from ledgers: one row per counterparty with a column per age bucket. Buckets are measured from the INVOICE date, not from a due date - the report carries no credit term - so what counts as overdue depends on the term, which must be asked for. See the finance-dashboard-import skill, rule one.",
+  "agingColumns": {
+    "code": [
+      "code",
+      "acc code",
+      "account code",
+      "debtor code",
+      "creditor code",
+      "科目编号",
+      "代号"
+    ],
+    "name": [
+      "company name",
+      "name",
+      "debtor name",
+      "creditor name",
+      "公司名称",
+      "名称"
+    ],
+    "currency": [
+      "currency",
+      "curr",
+      "币别"
+    ],
+    "balance": [
+      "balance",
+      "total",
+      "outstanding",
+      "余额",
+      "未清",
+      "合计"
+    ],
+    "current": [
+      "current",
+      "not due",
+      "未到期",
+      "当期"
+    ]
+  },
+  "agingBucketPattern": "^(\\d+)\\s*(month|months|个月)",
+  "agingOverPattern": "(&\\s*over|and over|以上|\\+)",
+  "accountPrefixPresets": {
+    "_default": {
+      "_note": "No default is applied. Pick a preset or map the prefixes by hand after reading the sample account names."
+    },
+    "sql-accounting": {
+      "_note": "The standard eStream SQL Accounting chart. Verified against a live export.",
+      "1": "equity",
+      "2": "fixedAsset",
+      "3": "debtor",
+      "4": "creditor",
+      "5": "income",
+      "6": "costOfSales",
+      "7": "costOfSales",
+      "8": "otherIncome",
+      "9": "expense",
+      "S": "tax"
+    },
+    "autocount": {
+      "_note": "AutoCount desktop/cloud uses account TYPE codes (SL/OI/CO/EP) rather than number prefixes, so this route does not need a prefix map at all.",
+      "_useAccountType": true
+    }
+  },
+  "lineOf": {
+    "_note": "Which statement line each classification feeds.",
+    "income": "SL",
+    "otherIncome": "OI",
+    "costOfSales": "CO",
+    "expense": "EP",
+    "equity": "BS",
+    "fixedAsset": "BS",
+    "debtor": "BS",
+    "creditor": "BS",
+    "tax": "BS",
+    "other": "BS"
+  },
+  "_overrideNote": "Prefix alone is not enough. On the reference chart 5xxx is operating revenue, but it also holds gains on asset disposal and contra-revenue accounts. Selling a camera is not turnover, and a discount is not income - leaving them in Sales makes an asset sale read as growth. These name patterns are checked BEFORE the prefix and win.",
+  "classifyOverrides": [
+    {
+      "match": "gain on disposal",
+      "as": "otherIncome",
+      "why": "Selling an asset is not turnover; it belongs outside operating revenue."
+    },
+    {
+      "match": "gain on foreign exchange",
+      "as": "otherIncome",
+      "why": "An FX gain counted as sales is a documented way to inflate revenue."
+    },
+    {
+      "match": "discount allowed",
+      "as": "contraRevenue",
+      "why": "A discount reduces revenue rather than adding to it."
+    },
+    {
+      "match": "return inwards",
+      "as": "contraRevenue",
+      "why": "Goods returned reduce revenue."
+    },
+    {
+      "match": "purchases return",
+      "as": "contraCost",
+      "why": "A purchase return reduces cost."
+    },
+    {
+      "match": "stocks at the",
+      "as": "costOfSales",
+      "why": "Opening and closing stock are part of the cost-of-sales calculation."
+    }
+  ],
+  "_cashNote": "Identifying bank and cash accounts by name alone puts a TERM LOAN - ALLIANCE BANK into the cash balance and BANK CHARGES with it. The account must BOTH sit in an asset classification AND match a cash name, and the exclusions below are checked first.",
+  "cashAccounts": {
+    "nameMatches": [
+      "bank",
+      "cash",
+      "petty cash",
+      "maybank",
+      "cimb",
+      "public bank",
+      "pbb",
+      "hong leong",
+      "rhb",
+      "ambank",
+      "alliance",
+      "uob",
+      "ocbc",
+      "affin",
+      "银行",
+      "现金",
+      "零用金"
+    ],
+    "nameExcludes": [
+      "loan",
+      "charges",
+      "charge",
+      "interest",
+      "w/o supp",
+      "without supp",
+      "overdraft interest",
+      "贷款",
+      "利息",
+      "手续费"
+    ],
+    "requireClass": [
+      "asset",
+      "currentAsset",
+      "debtor",
+      "fixedAsset"
+    ]
+  },
+  "_sectionNote": "Deliberately narrow. A bare \"account\" here matched the account NAME \"ACCOUNTING FEE\", which made that section fail to parse and silently dropped every posting under it. Section labels are matched only against the first cell of a row, never against the values beside it."
+}
