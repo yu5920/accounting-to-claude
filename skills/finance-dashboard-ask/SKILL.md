@@ -40,7 +40,7 @@ echo "dashboard: $DASH"; echo "mcp-server: $MCP"
    拿开票金额当营收，3~5 月每个月都错。
 2. **含税金额** —— 明细行的 `localSubTotal` 含税，要用 `localSubTotalExTax`。
    601 条发票明细里 53 条不一样，而 `inclusiveTax` 在 listing 里**不返回**，没法逐条判断。
-3. **有些发票行开在负债科目** —— `2700 HRDF FUND`（代收代缴）、`SST-4030`，
+3. **有些发票行开在负债科目** —— `2xxx` 某代收代缴基金科目（代收代缴）、`TAX-xxxx` 某税务控制科目，
    那不是营收。所以「开票总额」永远大于「营收」。
 
 **正确算法**：营收 = 过帐到 `AccType` 为 `SL` / `OI` / `SA` 的科目的净贷方，按 `docDate` 归月。
