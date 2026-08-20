@@ -4,7 +4,7 @@
 // the left, and one topic in view at a time. Every topic ends with its own
 // transaction ledger - searchable, sortable, paged - so any figure on screen
 // can be traced to the documents behind it.
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 const IN = process.argv[2] || "dashboard-data.json";
 const OUT = process.argv[3] || "dashboard.html";
@@ -13,7 +13,19 @@ const DATA = readFileSync(IN, "utf8");
 // ledger: which costs vary with volume, and which project each cost belongs to.
 // Both live in editable JSON so they can be corrected without touching code.
 const COST_RULES = readFileSync("cost-rules.json", "utf8");
-const PROJECT_MAP = readFileSync("project-map.json", "utf8");
+// project-map.json is per-install and gitignored, so a fresh clone will not have
+// one. Fall back to the committed example, then to an empty map - the GP-by-project
+// topic is designed to stay blank until someone fills it in, so "missing" is a
+// normal state, not an error.
+function loadProjectMap(readFileSync, existsSync) {
+  for (const f of ["project-map.json", "project-map.example.json"]) {
+    if (existsSync(f)) {
+      try { return readFileSync(f, "utf8"); } catch { /* try the next one */ }
+    }
+  }
+  return JSON.stringify({ companies: {} });
+}
+const PROJECT_MAP = loadProjectMap(readFileSync, existsSync);
 const parsed = JSON.parse(DATA);
 const liveCount = parsed.companies.filter((c) => !c.failed).length;
 const txnCount = parsed.companies.reduce((s, c) => s + ((c.txns || []).length), 0);
@@ -209,6 +221,8 @@ select:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline
 main{min-width:0}
 .vhead{margin-bottom:14px}
 .vhead h2{font-size:19px;letter-spacing:-.01em}
+/* Chinese title sits beside the English one, quieter and smaller. */
+.h2zh{margin-left:9px;font-size:13px;font-weight:500;color:var(--ink-3);letter-spacing:0}
 .vhead p{margin:3px 0 0;color:var(--ink-3);font-size:13px;max-width:76ch}
 .asat{display:inline-block;font-size:10px;font-weight:700;letter-spacing:.05em;
   background:var(--surface-2);color:var(--ink-3);padding:2px 7px;border-radius:3px;
@@ -325,6 +339,12 @@ main{min-width:0}
 .dtab.pnl th.cur{color:var(--brand)}
 .dtab.pnl .tcol{border-left:2px solid var(--rule);font-weight:700;padding-left:11px}
 
+/* A drillable row in the detail panel: level one lists the accounts, and each
+   one opens its own documents. */
+tr.drill{cursor:pointer}
+tr.drill:hover{background:var(--accent-wash)}
+tr.drill td.first .nm{color:var(--accent);font-weight:600}
+.figback{font-weight:600}
 .dtab.pnl td.fig{cursor:pointer}
 .dtab.pnl td.fig:hover{background:var(--accent-wash);box-shadow:inset 0 0 0 1px var(--accent)}
 .dtab.pnl td.figon{background:var(--accent);color:var(--on-accent);font-weight:700}
@@ -352,6 +372,18 @@ input[type=search]{min-width:190px}
 .lnk{background:none;border:0;padding:0;font:inherit;color:var(--accent);cursor:pointer;text-align:left}
 .lnk:hover{text-decoration:underline}
 .cfrest td{background:var(--rowalt,transparent)}
+/* Bilingual label: English carries the meaning, Chinese sits under it in a
+   smaller face. The boss scans the English line; the accountant checks the
+   Chinese one. Both are always present, so neither audience has to guess. */
+.bi{display:block;line-height:1.2}
+.bi b{display:block;font-weight:600;letter-spacing:.1px}
+.bi i{display:block;font-style:normal;font-size:11px;font-weight:400;color:var(--ink-3);margin-top:2px}
+th .bi b{font-weight:600}
+th .bi i{font-size:10px}
+.rnav .bi b{font-size:13px}
+.rnav .bi i{font-size:10px}
+.ledtog{margin-left:8px;white-space:nowrap}
+.ledcollapsed{margin:0;padding:14px 2px 2px;color:var(--ink-3)}
 .moreb{font-size:12px;padding:5px 16px;border-radius:6px;border:1px solid var(--rule);
   background:var(--surface-2);color:var(--ink-2);cursor:pointer}
 .moreb:hover{border-color:var(--accent);color:var(--ink)}
@@ -405,7 +437,7 @@ input[type=search]{min-width:190px}
     <div class="sub">集团财务分析 · Group Finance Cockpit</div>
   </div>
   <div class="bractions">
-    <button class="aibtn ghost" type="button" id="refreshBtn">↻ 更新资料</button>
+    <button class="aibtn ghost" type="button" id="refreshBtn">↻ Refresh 更新资料</button>
     <button class="aibtn" type="button" id="aiBtn">AI Review ▸</button>
     <div class="stamp">资料截至 ${genStr}<br>${parsed.months[0]} → ${parsed.months[parsed.months.length - 1]} · ${txnCount.toLocaleString()} 笔分录</div>
   </div>
@@ -456,7 +488,12 @@ var openFig = null;   // {line, acc, ym} whose detail panel is showing
 var cfOpen = {};
 var led = {};
 
-function ledState(k) { return led[k] || (led[k] = { q: "", sort: 0, dir: -1, limit: 60 }); }
+// open starts false: a page that lands on two hundred journal rows buries
+// the summary that was the point of the page. The count and the total stay
+// visible while collapsed, so nothing is hidden - only deferred.
+function ledState(k) {
+  return led[k] || (led[k] = { q: "", sort: 0, dir: -1, limit: 60, open: false });
+}
 
 function shift(ym, n) {
   var y = +ym.slice(0, 4), m = +ym.slice(5, 7) - 1 + n;
@@ -605,17 +642,32 @@ function ledger(key, title, hint, cols, rows) {
   var shown = sorted.slice(0, st.limit);
   var total = sum(filtered, function (r) { return Number(r.amt || r.total || 0); });
 
-  return '<section class="card ledger"><div class="lhead">' +
+  var head = '<section class="card ledger"><div class="lhead">' +
     '<div><h3>' + esc(title) + '</h3><p class="hint" style="margin:2px 0 0">' + esc(hint) + '</p></div>' +
-    '<div class="ltools"><input type="search" data-led="' + esc(key) +
-      '" placeholder="搜寻单号、摘要、科目…" value="' + esc(st.q) + '">' +
-    '<span class="lcount">' + filtered.length.toLocaleString() + ' 笔' +
-      (q ? "（全部 " + rows.length.toLocaleString() + "）" : "") +
-      ' · 合计 RM ' + rm(total) + '</span></div></div>' +
+    '<div class="ltools">' +
+    (st.open ? '<input type="search" data-led="' + esc(key) +
+      '" placeholder="Search doc no, description, account… 搜寻单号、摘要、科目…" value="' +
+      esc(st.q) + '">' : "") +
+    '<span class="lcount">' + filtered.length.toLocaleString() + ' entries 笔' +
+      (q ? "（of " + rows.length.toLocaleString() + "）" : "") +
+      ' · RM ' + rm(total) + '</span>' +
+    '<button class="moreb ledtog" type="button" data-ledtog="' + esc(key) + '">' +
+      (st.open ? "Hide entries 收起分录" : "Show entries 展开分录") + '</button>' +
+    '</div></div>';
+
+  if (!st.open) {
+    return head + '<p class="hint ledcollapsed">' +
+      'Collapsed by default. ' + filtered.length.toLocaleString() +
+      ' entries totalling RM ' + rm(total) +
+      ' —— 预设收起，点上面的按钮展开明细。</p></section>';
+  }
+
+  return head +
     '<div class="tscroll"><table class="dtab"><thead><tr>' +
     cols.map(function (col, i) {
       return '<th class="sortable' + (col.num ? " num" : "") + (i === 0 ? " first" : "") +
-        '" data-led="' + esc(key) + '" data-col="' + i + '">' + esc(col.label) +
+        '" data-led="' + esc(key) + '" data-col="' + i + '">' +
+        (col.en ? bi(col.en, col.label) : esc(col.label)) +
         (i === st.sort ? '<span class="ar">' + (st.dir > 0 ? "▲" : "▼") + '</span>' : "") + '</th>';
     }).join("") + '</tr></thead><tbody>' +
     (shown.length ? shown.map(function (r) {
@@ -626,7 +678,7 @@ function ledger(key, title, hint, cols, rows) {
     '</tbody></table></div>' +
     (sorted.length > st.limit
       ? '<div class="more"><button class="moreb" type="button" data-more="' + esc(key) +
-        '">再显示 100 笔（还有 ' + (sorted.length - st.limit).toLocaleString() + ' 笔）</button></div>'
+        '">Show 100 more 再显示 100 笔（还有 ' + (sorted.length - st.limit).toLocaleString() + ' ）</button></div>'
       : "") + '</section>';
 }
 
@@ -737,8 +789,8 @@ function accTable(rows, months, cm, opts) {
   var max = Math.max.apply(null, rows.map(function (r) { return Math.abs(r.cur); }).concat([1]));
   var grand = sum(rows, function (r) { return r.cur; });
   return '<div class="tscroll"><table class="dtab"><thead><tr><th class="first">' + esc(opts.head) +
-    '</th><th class="num">本期</th><th></th><th>走势</th><th class="num">占比</th>' +
-    (cm ? '<th class="num">' + esc(cmpLabel()) + '</th><th class="num">变化</th>' : "") +
+    '</th><th class="num">' + bi("This period", "本期") + '</th><th></th><th>' + bi("Trend", "走势") + '</th><th class="num">' + bi("Share", "占比") + '</th>' +
+    (cm ? '<th class="num">' + esc(cmpLabel()) + '</th><th class="num">' + bi("Change", "变化") + '</th>' : "") +
     '</tr></thead><tbody>' + rows.map(function (r) {
       var d = cm && r.cmp ? ((r.cur - r.cmp) / Math.abs(r.cmp)) * 100 : null;
       return '<tr><td class="first"><span class="nm">' + esc(r.name) + '</span>' + (r.tag || "") +
@@ -824,7 +876,7 @@ function cfMatrix(list, months, dir, title, hint) {
     '<div class="tscroll"><table class="dtab"><thead><tr><th class="first">' +
     (dir === "in" ? "来源科目" : "去向科目") + '</th>' + months.map(function (m) {
       return '<th class="num">' + esc(mlab(m)) + '</th>'; }).join("") +
-    '<th class="num">合计</th><th class="num">占比</th></tr></thead><tbody>' + body +
+    '<th class="num">' + bi("Total", "合计") + '</th><th class="num">' + bi("Share", "占比") + '</th></tr></thead><tbody>' + body +
     '</tbody></table></div></section>';
 }
 function cfMonthly(list, months) {
@@ -1056,9 +1108,18 @@ var TOPICS = [
   { id: "source",   label: "资料来源",  en: "Data Source" },
 ];
 
-function vhead(title, desc, asat) {
-  return '<div class="vhead"><h2>' + esc(title) +
-    (asat ? '<span class="asat">当下</span>' : "") + '</h2><p>' + esc(desc) + '</p></div>';
+// English first, Chinese underneath. Pass zh empty for terms that are already
+// international (RM, GP%, dates) rather than inventing a translation.
+function bi(en, zh) {
+  return '<span class="bi"><b>' + esc(en) + '</b>' +
+    (zh ? '<i>' + esc(zh) + '</i>' : "") + '</span>';
+}
+
+function vhead(titleEn, titleZh, desc, asat) {
+  return '<div class="vhead"><h2>' + esc(titleEn) +
+    (titleZh ? '<span class="h2zh">' + esc(titleZh) + '</span>' : "") +
+    (asat ? '<span class="asat">as at today 当下</span>' : "") +
+    '</h2><p>' + esc(desc) + '</p></div>';
 }
 
 function viewOverview(list, months, cm) {
@@ -1115,7 +1176,7 @@ function viewOverview(list, months, cm) {
   var cRev = cm ? sum(list, function (c) { return revenueOf(c, cm); }) : null;
   var cCost = cm ? sum(list, function (c) { return costOf(c, cm); }) : null;
 
-  return vhead("总览", "期间 " + range.from + " → " + range.to + "（" + months.length + " 个月）" +
+  return vhead("Overview", "总览", "期间 " + range.from + " → " + range.to + "（" + months.length + " 个月）" +
       (cm ? "，对比" + cmpLabel() : "") + "。左侧每个主题都能钻到分录。") +
     '<section class="card"><h3>这份报表说了什么</h3>' +
     '<div class="grid g2" style="margin-top:10px">' + items.map(function (it) {
@@ -1211,23 +1272,25 @@ function pnlStatement(list, months, title, level) {
   var tot = function (a) { return a.reduce(function (x, y) { return x + y; }, 0); };
   var ratio = function (num, den, i) { return den[i] ? num[i] / den[i] : null; };
 
+  // Labels come from LINE_META so the statement, the detail panel and the
+  // drill-down headings can never drift apart.
   var LINES = [
-    { id: "SL", k: "销售 Sales", v: s.sl, kind: "SL" },
-    { id: "OI", k: "其他收入 Other income", v: s.oi, kind: "OI" },
-    { id: "REV", k: "营业收入 Revenue", v: s.rev, strong: true },
-    { id: "CO", k: "销货成本 Cost of sales", v: s.co, negate: true, kind: "CO" },
-    { id: "GP", k: "毛利 Gross profit", v: s.gp, strong: true },
-    { id: "GPR", k: "毛利率 GP%", ratioOf: ["gp", "rev"] },
-    { id: "EP", k: "营业费用 Operating expenses", v: s.ep, negate: true, kind: "EP" },
-    { id: "NP", k: "净利 Net profit", v: s.np, strong: true },
-    { id: "NPR", k: "净利率 Net margin", ratioOf: ["np", "rev"] },
+    { id: "SL", v: s.sl, kind: "SL" },
+    { id: "OI", v: s.oi, kind: "OI" },
+    { id: "REV", v: s.rev, strong: true },
+    { id: "CO", v: s.co, negate: true, kind: "CO" },
+    { id: "GP", v: s.gp, strong: true },
+    { id: "GPR", ratioOf: ["gp", "rev"] },
+    { id: "EP", v: s.ep, negate: true, kind: "EP" },
+    { id: "NP", v: s.np, strong: true },
+    { id: "NPR", ratioOf: ["np", "rev"] },
   ];
 
   var head = '<tr><th class="first">' + esc(title) + '</th>' +
     months.map(function (m) {
       return '<th class="num' + (m === LASTFULL ? " cur" : "") + '">' + esc(mlab(m)) +
         (m === ALLM[ALLM.length - 1] ? " ·" : "") + '</th>'; }).join("") +
-    '<th class="num tcol">合计 Total</th></tr>';
+    '<th class="num tcol">' + bi("Total", "合计") + '</th></tr>';
 
   // A clickable figure. line/acc/month identify what to show in the panel.
   var cell = function (txt, lineId, acc, ym, extra) {
@@ -1241,14 +1304,16 @@ function pnlStatement(list, months, title, level) {
   LINES.forEach(function (L) {
     if (L.ratioOf) {
       var num = s[L.ratioOf[0]], den = s[L.ratioOf[1]];
-      body += '<tr class="ratio"><td class="first">' + esc(L.k) + '</td>' +
+      body += '<tr class="ratio" data-row="' + L.id + '"><td class="first">' +
+        bi(LINE_META[L.id].en, LINE_META[L.id].zh) + '</td>' +
         months.map(function (m, i) {
           return cell(pct1(ratio(num, den, i)), L.id, "", m); }).join("") +
         cell(pct1(tot(den) ? tot(num) / tot(den) : null), L.id, "", "", " tcol") + '</tr>';
       return;
     }
     var vals = L.negate ? L.v.map(function (x) { return -x; }) : L.v;
-    body += '<tr' + (L.strong ? ' class="sub"' : "") + '><td class="first">' + esc(L.k) + '</td>' +
+    body += '<tr' + (L.strong ? ' class="sub"' : "") + ' data-row="' + L.id +
+      '"><td class="first">' + bi(LINE_META[L.id].en, LINE_META[L.id].zh) + '</td>' +
       vals.map(function (x, i) { return cell(acct(x), L.id, "", months[i]); }).join("") +
       cell(acct(tot(vals)), L.id, "", "", " tcol") + '</tr>';
 
@@ -1270,16 +1335,20 @@ function pnlStatement(list, months, title, level) {
 
 // What sits behind one figure: the accounts, then the documents.
 var LINE_META = {
-  SL:  { label: "销售 Sales", kinds: ["R"], types: ["SL"] },
-  OI:  { label: "其他收入 Other income", kinds: ["R"], types: ["OI"] },
-  CO:  { label: "销货成本 Cost of sales", kinds: ["E"], types: ["CO"] },
-  EP:  { label: "营业费用 Operating expenses", kinds: ["E"], types: ["EP"] },
-  REV: { label: "营业收入 Revenue", kinds: ["R"], types: ["SL", "OI"] },
-  GP:  { label: "毛利 Gross profit", composed: ["REV", "CO"] },
-  NP:  { label: "净利 Net profit", composed: ["REV", "CO", "EP"] },
-  GPR: { label: "毛利率 GP%", ratio: ["GP", "REV"] },
-  NPR: { label: "净利率 Net margin", ratio: ["NP", "REV"] },
+  SL:  { en: "Sales", zh: "销售", kinds: ["R"], types: ["SL"] },
+  OI:  { en: "Other income", zh: "其他收入", kinds: ["R"], types: ["OI"] },
+  CO:  { en: "Cost of sales", zh: "销货成本", kinds: ["E"], types: ["CO"] },
+  EP:  { en: "Operating expenses", zh: "营业费用", kinds: ["E"], types: ["EP"] },
+  REV: { en: "Revenue", zh: "营业收入", kinds: ["R"], types: ["SL", "OI"] },
+  GP:  { en: "Gross profit", zh: "毛利", composed: ["REV", "CO"] },
+  NP:  { en: "Net profit", zh: "净利", composed: ["REV", "CO", "EP"] },
+  GPR: { en: "GP%", zh: "毛利率", ratio: ["GP", "REV"] },
+  NPR: { en: "Net margin", zh: "净利率", ratio: ["NP", "REV"] },
 };
+// Anything that used LINE_META[x].label still gets a readable string.
+Object.keys(LINE_META).forEach(function (k) {
+  LINE_META[k].label = LINE_META[k].en + " " + LINE_META[k].zh;
+});
 
 function figureDetail(list, months, lineId, acc, ym) {
   var M = LINE_META[lineId];
@@ -1314,45 +1383,82 @@ function figureDetail(list, months, lineId, acc, ym) {
       '<p class="hint">小计与比率由上列组成 —— 点上面的明细列可以看到分录。</p>';
   }
 
-  // Detail lines: which accounts, then the transactions themselves.
+  // Two levels, deliberately. Level one answers "what is this number made of?"
+  // with the accounts that compose it; level two answers "which documents?" for
+  // one account at a time. Showing both at once buried a five-line answer under
+  // two hundred journal rows, and nobody scrolled.
   var accs = [];
   M.types.forEach(function (ty) {
     pnlAccounts(list, scope, ty).forEach(function (a) {
-      if (acc && a.acc !== acc) return;
-      accs.push({ acc: a.acc, name: a.name, v: a.v.reduce(function (x, y) { return x + y; }, 0) });
+      accs.push({ acc: a.acc, name: a.name,
+                  v: a.v.reduce(function (x, y) { return x + y; }, 0) });
     });
   });
-  var total = accs.reduce(function (s2, a) { return s2 + a.v; }, 0);
+  var grand = accs.reduce(function (s2, a) { return s2 + a.v; }, 0);
+  var allTxns = txnsOf(list, scope, M.kinds);
+  var countBy = {};
+  allTxns.forEach(function (t) { countBy[t.acc] = (countBy[t.acc] || 0) + 1; });
 
-  var wanted = {};
-  accs.forEach(function (a) { wanted[a.acc] = 1; });
-  var txns = txnsOf(list, scope, M.kinds)
-    .filter(function (t) { return wanted[t.acc]; })
-    .sort(function (x, y) { return Math.abs(y.amt) - Math.abs(x.amt); });
+  // ---------- level 2: one account's documents ----------
+  if (acc) {
+    var one = accs.filter(function (a) { return a.acc === acc; })[0] ||
+              { acc: acc, name: acc, v: 0 };
+    var txns = allTxns.filter(function (t) { return t.acc === acc; })
+      .sort(function (x, y) { return Math.abs(y.amt) - Math.abs(x.amt); });
+    return '<p class="dmeta">' +
+      '<button class="lnk figback" type="button" data-figback="1">← ' +
+      esc(M.en || M.label) + ' ' + esc(M.zh || "") + '</button>' +
+      ' · <b>' + esc(one.name) + '</b> <span class="mono">' + esc(one.acc) + '</span>' +
+      ' · ' + esc(period) + ' · RM ' + rm(one.v) + '</p>' +
+      '<h5 class="dsub">' + bi("Transactions", "分录") + ' · ' +
+        txns.length.toLocaleString() +
+        (txns.length > 200 ? '（largest 200 只显示金额最大的 200 笔）' : "") + '</h5>' +
+      '<div class="tscroll"><table class="dtab"><thead><tr>' +
+      '<th class="first">' + bi("Date", "日期") + '</th>' +
+      '<th>' + bi("Company", "公司") + '</th>' +
+      '<th>' + bi("Doc no", "单号") + '</th>' +
+      '<th>' + bi("Description", "摘要") + '</th>' +
+      '<th>' + bi("Contra account", "对方科目") + '</th>' +
+      '<th class="num">' + bi("Amount", "金额") + '</th>' +
+      '</tr></thead><tbody>' + (txns.length ? txns.slice(0, 200).map(function (t) {
+        return '<tr><td class="first mono">' + esc(t.date) + '</td>' +
+          '<td class="mono">' + esc(t.co) + '</td>' +
+          '<td class="mono">' + esc(t.ref || "—") + '</td>' +
+          '<td>' + esc(t.desc || "—") + '</td>' +
+          '<td>' + esc(t.ctrName || "—") + '</td>' +
+          '<td class="num"><b>' + rm(t.amt) + '</b></td></tr>';
+      }).join("") : '<tr><td class="empty" colspan="6">' +
+        'No entries in this period 这个期间没有分录。</td></tr>') +
+      '</tbody></table></div>';
+  }
 
-  return '<p class="dmeta">' + esc(M.label) + (acc ? " · " + esc(acc) : "") +
-    ' · ' + esc(period) + ' · 合计 RM ' + rm(total) + '</p>' +
-    (accs.length > 1
-      ? '<h5 class="dsub">组成科目</h5><div class="tscroll"><table class="dtab"><tbody>' +
-        accs.map(function (a) {
-          return '<tr><td class="first"><span class="nm">' + esc(a.name) + '</span>' +
-            '<span class="sub2">' + esc(a.acc) + '</span></td><td class="num">' + acct(a.v) +
-            '</td></tr>'; }).join("") +
-        '<tr class="sub"><td class="first">合计</td><td class="num">' + acct(total) +
-        '</td></tr></tbody></table></div>' : "") +
-    '<h5 class="dsub">分录 ' + txns.length.toLocaleString() + ' 笔' +
-      (txns.length > 200 ? '（金额最大的 200 笔）' : "") + '</h5>' +
-    '<div class="tscroll"><table class="dtab"><thead><tr><th class="first">日期</th><th>公司</th>' +
-    '<th>单号</th><th>摘要</th><th>科目</th><th>对方科目</th><th class="num">金额</th>' +
-    '</tr></thead><tbody>' + (txns.length ? txns.slice(0, 200).map(function (t) {
-      return '<tr><td class="first mono">' + esc(t.date) + '</td>' +
-        '<td class="mono">' + esc(t.co) + '</td><td class="mono">' + esc(t.ref || "—") + '</td>' +
-        '<td>' + esc(t.desc || "—") + '</td>' +
-        '<td>' + esc(t.accName) + '<span class="sub2">' + esc(t.acc) + '</span></td>' +
-        '<td>' + esc(t.ctrName || "—") + '</td>' +
-        '<td class="num"><b>' + rm(t.amt) + '</b></td></tr>';
-    }).join("") : '<tr><td class="empty" colspan="7">这个期间没有分录。</td></tr>') +
-    '</tbody></table></div>';
+  // ---------- level 1: the accounts that make up the figure ----------
+  var rows = accs.filter(function (a) { return a.v !== 0 || countBy[a.acc]; })
+    .sort(function (x, y) { return Math.abs(y.v) - Math.abs(x.v); });
+  return '<p class="dmeta"><b>' + esc(M.en || M.label) + '</b> ' + esc(M.zh || "") +
+    ' · ' + esc(period) + ' · RM ' + rm(grand) + '</p>' +
+    '<h5 class="dsub">' + bi("By account", "组成科目") + ' · ' + rows.length + '</h5>' +
+    '<div class="tscroll"><table class="dtab"><thead><tr>' +
+    '<th class="first">' + bi("Account", "科目") + '</th>' +
+    '<th class="num">' + bi("Entries", "笔数") + '</th>' +
+    '<th class="num">' + bi("Amount", "金额") + '</th>' +
+    '<th class="num">' + bi("Share", "占比") + '</th>' +
+    '</tr></thead><tbody>' + (rows.length ? rows.map(function (a) {
+      return '<tr class="drill" data-figacc="' + esc(a.acc) + '">' +
+        '<td class="first"><span class="nm">' + esc(a.name) + '</span>' +
+        '<span class="sub2">' + esc(a.acc) + '</span></td>' +
+        '<td class="num">' + (countBy[a.acc] || 0).toLocaleString() + '</td>' +
+        '<td class="num">' + acct(a.v) + '</td>' +
+        '<td class="num">' + (grand ? ((a.v / grand) * 100).toFixed(1) + "%" : "—") +
+        '</td></tr>';
+    }).join("") : '<tr><td class="empty" colspan="4">' +
+      'Nothing in this period 这个期间没有资料。</td></tr>') +
+    '<tr class="sub"><td class="first">' + bi("Total", "合计") + '</td>' +
+    '<td class="num">' + allTxns.length.toLocaleString() + '</td>' +
+    '<td class="num">' + acct(grand) + '</td><td class="num">100%</td></tr>' +
+    '</tbody></table></div>' +
+    '<p class="hint">' +
+    'Click an account to see the documents behind it. 点一个科目，看它背后的分录。</p>';
 }
 
 function viewPnl(list, months, cm) {
@@ -1370,17 +1476,17 @@ function viewPnl(list, months, cm) {
   var series = [{ key: "profit", label: "净利" }];
   if (cm) series.push({ key: "cmpProfit", label: cmpLabel(), cls: "cmp" });
 
-  return vhead("损益 P&L", "各公司独立损益，合并是全部加总。负数以括号显示。" +
+  return vhead("Profit & Loss", "损益表", "各公司独立损益，合并是全部加总。负数以括号显示。" +
       "点任何一个数字就会跳出它的来源。成本无法拆到服务线，所以损益只到公司层级。") +
     '<div class="enttabs">' + ents.map(function (e) {
       return '<button class="ent" type="button" data-ent="' + esc(e.id) + '" aria-pressed="' +
         (e.id === ent.id) + '">' + esc(e.label) + '</button>'; }).join("") + '</div>' +
     '<section class="card"><div class="lhead"><div>' +
-    '<h3>损益表 · ' + esc(ent.label) + '</h3>' +
+    '<h3>Statement 损益表 · ' + esc(ent.label) + '</h3>' +
     '<p class="hint" style="margin:2px 0 0">内部往来未冲销 · 最后一个月未过完（标 ·）· ' +
       esc(range.from) + " → " + esc(range.to) + '</p></div>' +
-    '<div class="ltools"><span class="cnote">层级</span>' +
-    [[1, "Level 1 汇总"], [2, "Level 2 明细科目"]].map(function (l) {
+    '<div class="ltools"><span class="cnote">Detail 层级</span>' +
+    [[1, "Level 1 Summary 汇总"], [2, "Level 2 Accounts 明细科目"]].map(function (l) {
       return '<button class="pill" type="button" data-lvl="' + l[0] + '" aria-pressed="' +
         (pnlLevel === l[0]) + '">' + esc(l[1]) + '</button>'; }).join("") + '</div></div>' +
     pnlStatement(ent.list, months, ent.id === "__all__" ? "合并 (RM)" : ent.label + " (RM)",
@@ -1389,7 +1495,7 @@ function viewPnl(list, months, cm) {
     '</section>' +
     (openFig
       ? '<section class="card figpanel" id="figpanel"><div class="lhead">' +
-        '<h3>数字来源 · ' + esc((LINE_META[openFig.line] || {}).label || openFig.line) +
+        '<h3>Where this number comes from 数字来源 · ' + esc((LINE_META[openFig.line] || {}).label || openFig.line) +
         (openFig.ym ? " · " + esc(openFig.ym) : " · 期间合计") + '</h3>' +
         '<button class="close" type="button" id="figClose">关闭</button></div>' +
         figureDetail(ent.list, months, openFig.line, openFig.acc, openFig.ym) + '</section>'
@@ -1420,7 +1526,7 @@ function viewCash(list, months) {
     txns = txns.filter(function (t) { return !bankNames[t.ctr]; });
   }
 
-  return vhead("现金流", "以银行分录的对方科目判定钱的来源与去向。" +
+  return vhead("Cash Flow", "现金流", "以银行分录的对方科目判定钱的来源与去向。" +
       (excludeInternal ? "已排除自家户口之间的调拨。" : "目前含户口间调拨，流入流出两边会被灌大。")) +
     '<div class="grid g3">' +
       kpi("流入", gin, "", "期间进银行", "cashin") +
@@ -1439,9 +1545,9 @@ function viewCash(list, months) {
     '<section class="card"><h3>各户口逐月净流</h3>' +
     '<p class="hint">余额是当下的，不受期间筛选影响。</p>' +
     (bankRows.length ? '<div class="tscroll"><table class="dtab"><thead><tr>' +
-      '<th class="first">公司 · 户口</th><th class="num">当下余额</th>' +
+      '<th class="first">' + bi("Company · Account", "公司·户口") + '</th><th class="num">' + bi("Balance now", "当下余额") + '</th>' +
       months.map(function (m) { return '<th class="num">' + esc(mlab(m)) + '</th>'; }).join("") +
-      '<th class="num">期间净流</th></tr></thead><tbody>' + bankRows.map(function (b) {
+      '<th class="num">' + bi("Net flow", "期间净流") + '</th></tr></thead><tbody>' + bankRows.map(function (b) {
         var nets = months.map(function (m) {
           return sum(cfOf(b.c, [m]).filter(function (r) { return r.bank === b.a.acc; }),
                      function (r) { return r.in - r.out; }); });
@@ -1460,7 +1566,7 @@ function viewCash(list, months) {
 }
 
 function viewAr(list, months) {
-  return vhead("应收", "账龄与 DSO 是当下的位置；下面的单据表依期间筛选。", true) +
+  return vhead("Receivables", "应收帐款", "账龄与 DSO 是当下的位置；下面的单据表依期间筛选。", true) +
     '<div class="grid g4">' +
       kpi("未收合计", sum(list, function (c) { return c.ar.total; }), "", "当下", "ar") +
       kpi("其中逾期", sum(list, function (c) { return c.ar.overdue; }), "neg", "已过到期日", null) +
@@ -1481,7 +1587,7 @@ function viewAr(list, months) {
 }
 
 function viewAp(list, months) {
-  return vhead("应付", "未付余额是当下的位置；下面的单据表依期间筛选。", true) +
+  return vhead("Payables", "应付帐款", "未付余额是当下的位置；下面的单据表依期间筛选。", true) +
     '<div class="grid g3">' +
       kpi("未付合计", sum(list, function (c) { return c.ap.total; }), "", "当下", null) +
       kpi("其中逾期", sum(list, function (c) { return c.ap.overdue; }), "neg", "已过到期日", null) +
@@ -1493,8 +1599,8 @@ function viewAp(list, months) {
         ' <span class="muted">未付 RM ' + rm(c.ap.total) + '</span></h5>' + ageBar(c.ap) + '</div>';
     }).join("") + '</div></section>' +
     '<section class="card"><h3>供应商未付排行</h3><div class="tscroll"><table class="dtab">' +
-    '<thead><tr><th class="first">公司 · 供应商</th><th class="num">未付</th><th class="num">张数</th>' +
-    '<th class="num">最久逾期</th></tr></thead><tbody>' +
+    '<thead><tr><th class="first">' + bi("Company · Supplier", "公司·供应商") + '</th><th class="num">' + bi("Outstanding", "未付") + '</th><th class="num">' + bi("Docs", "张数") + '</th>' +
+    '<th class="num">' + bi("Oldest overdue", "最久逾期") + '</th></tr></thead><tbody>' +
     [].concat.apply([], list.map(function (c) {
       return (c.topCreditors || []).map(function (r) { return { co: c.short, r: r }; }); }))
       .sort(function (x, y) { return y.r.owing - x.r.owing; }).map(function (x) {
@@ -1536,10 +1642,10 @@ function viewCust(list, months, cm) {
   });
   custRows.sort(function (a, b) { return b.cur - a.cur; });
 
-  return vhead("客户", "集中度依期间开单额计算。单一客户超过 50% 视为高风险。") +
+  return vhead("Customers", "客户", "集中度依期间开单额计算。单一客户超过 50% 视为高风险。") +
     '<section class="card"><h3>集中度</h3><div class="tscroll"><table class="dtab"><thead><tr>' +
-    '<th class="first">公司</th><th>最大客户</th><th class="num">金额</th><th class="num">占比</th>' +
-    '<th class="num">前三大</th><th class="num">客户数</th></tr></thead><tbody>' +
+    '<th class="first">' + bi("Company", "公司") + '</th><th>' + bi("Top customer", "最大客户") + '</th><th class="num">' + bi("Amount", "金额") + '</th><th class="num">' + bi("Share", "占比") + '</th>' +
+    '<th class="num">' + bi("Top 3", "前三大") + '</th><th class="num">' + bi("Customers", "客户数") + '</th></tr></thead><tbody>' +
     (conc.length ? conc.map(function (r) {
       return '<tr><td class="first nm">' + esc(r.co) + '</td><td>' + esc(r.top.name) + '</td>' +
         '<td class="num">' + rm(r.top.amt) + '</td><td class="num risk ' +
@@ -1563,7 +1669,7 @@ function viewLines(list, months, cm) {
     }).map(function (r) { r.name = c.short + " · " + r.name; return r; }));
   });
   rows.sort(function (a, b) { return Math.abs(b.cur) - Math.abs(a.cur); });
-  return vhead("服务线", "以发票明细的会计科目分类。标「预收」的进了负债科目，不是当期收入；" +
+  return vhead("Service Lines", "服务线", "以发票明细的会计科目分类。标「预收」的进了负债科目，不是当期收入；" +
       "标「成本回收」的是把成本转嫁给客户。成本无法拆到服务线，所以这里只有收入。") +
     '<section class="card"><h3>各服务线开单额</h3>' + accTable(rows, months, cm, { head: "公司 · 服务线" }) +
     '</section>' +
@@ -1579,15 +1685,15 @@ function viewLiab(list, months) {
       rows.push({ co: c.short, l: l }); }); });
   rows.sort(function (x, y) { return y.l.bal - x.l.bal; });
   var def = sum(list, function (c) { return deferredOf(c); });
-  return vhead("负债与递延", "递延收入是已收钱、还没交付的服务 —— 既是负债，也是已锁定的未来收入。", true) +
+  return vhead("Liabilities & Deferred", "负债与递延", "递延收入是已收钱、还没交付的服务 —— 既是负债，也是已锁定的未来收入。", true) +
     '<div class="grid g3">' +
       kpi("递延收入", def, "", "已收钱、未交付", "deferred") +
       kpi("流动负债合计", sum(rows, function (r) { return r.l.bal; }), "", "已排除 AP 控制科目", null) +
       kpi("未付应付", sum(list, function (c) { return c.ap.total; }), "", "供应商欠款", null) +
     '</div><div class="lin" id="lineage" hidden></div>' +
     '<section class="card"><h3>负债科目</h3><p class="hint">已隐藏应付账款控制科目（SCR），那是 AP 分类账的汇总。</p>' +
-    '<div class="tscroll"><table class="dtab"><thead><tr><th class="first">公司 · 科目</th>' +
-    '<th class="num">余额</th></tr></thead><tbody>' + rows.map(function (r) {
+    '<div class="tscroll"><table class="dtab"><thead><tr><th class="first">' + bi("Company · Account", "公司·科目") + '</th>' +
+    '<th class="num">' + bi("Balance", "余额") + '</th></tr></thead><tbody>' + rows.map(function (r) {
       return '<tr><td class="first"><span class="mono">' + esc(r.co) + '</span> ' +
         '<span class="nm">' + esc(r.l.name) + '</span>' +
         (r.l.isDeferred ? '<span class="tag deferred">递延收入</span>' : "") +
@@ -1600,15 +1706,15 @@ function viewLiab(list, months) {
 
 function viewAlerts(list, months) {
   var a = buildAlerts(list, months);
-  return vhead("风险预警", "只统计选中的公司，按严重程度排序。红点最紧急。") +
+  return vhead("Alerts", "风险预警", "只统计选中的公司，按严重程度排序。红点最紧急。") +
     '<div class="grid g2">' +
     alertCard("收不回的钱", a.collect, "逾期 90 天以上、DSO 过长、或超过信用额度。") +
     alertCard("现金压力", a.cash, "银行贷方余额，或 runway 不足 6 个月。") +
     alertCard("获利在恶化", a.trend, "期间后段净利比前段更差且为负。") +
     alertCard("集中度风险", a.conc, "单一客户占该公司期间收入超过一半。") + '</div>' +
     '<section class="card"><h3>各公司 runway</h3><div class="tscroll"><table class="dtab">' +
-    '<thead><tr><th class="first">公司</th><th class="num">现金</th><th class="num">月均净烧</th>' +
-    '<th class="num">Runway</th><th class="num">期间净利</th></tr></thead><tbody>' +
+    '<thead><tr><th class="first">' + bi("Company", "公司") + '</th><th class="num">' + bi("Cash", "现金") + '</th><th class="num">' + bi("Avg monthly burn", "月均净烧") + '</th>' +
+    '<th class="num">Runway</th><th class="num">' + bi("Net profit", "期间净利") + '</th></tr></thead><tbody>' +
     list.slice().sort(function (x, y) { return runwayOf(x, months) - runwayOf(y, months); })
       .map(function (c) {
         var r = runwayOf(c, months), b = burnOf(c, months);
@@ -1669,7 +1775,7 @@ function viewReview(list, months, cm) {
   var t = function (k) { return s[k].reduce(function (x, y) { return x + y; }, 0); };
   var np = t("np"), rev = t("rev");
 
-  return vhead("AI Review", "上半部是自动检查，跟着上面的公司与期间即时重算；" +
+  return vhead("AI Review", "智能评述", "上半部是自动检查，跟着上面的公司与期间即时重算；" +
       "下半部是快照建立时写下的评述，会标注日期。") +
     '<section class="card"><h3>本期结论</h3>' +
     '<p class="dmeta">' + esc(range.from) + " → " + esc(range.to) + "（" + months.length +
@@ -1690,7 +1796,7 @@ function viewReview(list, months, cm) {
     '<p class="hint">与期间中位数（' + acct(median) + '）相差 1.5 个标准差以上的月份。' +
     '单月异常会把整段合计拉歪，先看这里。</p>' +
     (odd.length ? '<div class="tscroll"><table class="dtab"><thead><tr><th class="first">月份</th>' +
-      '<th class="num">净利</th><th class="num">偏离</th><th>判读</th></tr></thead><tbody>' +
+      '<th class="num">' + bi("Net profit", "净利") + '</th><th class="num">' + bi("Variance", "偏离") + '</th><th>' + bi("Reading", "判读") + '</th></tr></thead><tbody>' +
       odd.map(function (o) {
         return '<tr><td class="first nm">' + esc(o.ym) + '</td><td class="num ' +
           (o.profit < 0 ? "neg" : "pos") + '"><b>' + acct(o.profit) + '</b></td>' +
@@ -1705,8 +1811,8 @@ function viewReview(list, months, cm) {
       ? "与" + cmpLabel() + "相比变动 40% 以上、且金额达 20,000 的费用科目，按变动金额排序。"
       : "需要先在上方选一个比较期间（去年同期或前一期）才能算异动。") + '</p>' +
     (cm ? (swings.length ? '<div class="tscroll"><table class="dtab"><thead><tr>' +
-      '<th class="first">公司 · 科目</th><th class="num">本期</th><th class="num">' +
-      esc(cmpLabel()) + '</th><th class="num">差额</th><th class="num">变化</th>' +
+      '<th class="first">' + bi("Company · Account", "公司·科目") + '</th><th class="num">' + bi("This period", "本期") + '</th><th class="num">' +
+      esc(cmpLabel()) + '</th><th class="num">差额</th><th class="num">' + bi("Change", "变化") + '</th>' +
       '</tr></thead><tbody>' + swings.slice(0, 12).map(function (w) {
         return '<tr><td class="first"><span class="mono">' + esc(w.co) + '</span> ' +
           '<span class="nm">' + esc(w.name) + '</span><span class="sub2">' + esc(w.acc) +
@@ -1849,41 +1955,71 @@ function vrgfpDetail(list, months, lineId, ym) {
       '</tbody></table></div>';
   }
 
-  // Which accounts make up this line, then the entries behind them.
+  // Same two-step as the P&L panel: the accounts first, one account's documents
+  // only when asked. Keeping the two panels consistent matters more than saving
+  // a click - a reader who learns the pattern once should not have to relearn it.
   var accs = [];
   list.forEach(function (c) {
     var src = M.rev ? (c.revenueAccounts || []) : (c.expenses || []);
-    src.forEach(function (a) {
-      if (!M.rev && M.buckets.indexOf(costBucket(a.acc, a.name, a.type)) === -1) return;
-      var v = overM(a.m, scope);
-      if (v) accs.push({ co: c.short, acc: a.acc, name: a.name, v: v });
+    src.forEach(function (a2) {
+      if (!M.rev && M.buckets.indexOf(costBucket(a2.acc, a2.name, a2.type)) === -1) return;
+      var v = overM(a2.m, scope);
+      if (v) accs.push({ co: c.short, acc: a2.acc, name: a2.name, v: v });
     });
   });
   accs.sort(function (x, y) { return Math.abs(y.v) - Math.abs(x.v); });
-  var total = accs.reduce(function (s2, a) { return s2 + a.v; }, 0);
+  var total = accs.reduce(function (s2, a2) { return s2 + a2.v; }, 0);
   var want = {};
-  accs.forEach(function (a) { want[a.acc] = 1; });
-  var txns = txnsOf(list, scope, M.kinds).filter(function (t2) { return want[t2.acc]; })
-    .sort(function (x, y) { return Math.abs(y.amt) - Math.abs(x.amt); });
+  accs.forEach(function (a2) { want[a2.acc] = 1; });
+  var allT = txnsOf(list, scope, M.kinds).filter(function (t2) { return want[t2.acc]; });
+  var cnt = {};
+  allT.forEach(function (t2) { cnt[t2.acc] = (cnt[t2.acc] || 0) + 1; });
 
-  return '<p class="dmeta">' + esc(M.label) + ' · ' + esc(period) +
-    ' · 合计 RM ' + rm(total) + '</p><h5 class="dsub">组成科目 ' + accs.length + ' 个</h5>' +
-    '<div class="tscroll"><table class="dtab"><tbody>' + accs.slice(0, 40).map(function (a) {
-      return '<tr><td class="first"><span class="mono">' + esc(a.co) + '</span> ' +
-        '<span class="nm">' + esc(a.name) + '</span><span class="sub2">' + esc(a.acc) +
-        '</span></td><td class="num">' + acct(a.v) + '</td></tr>'; }).join("") +
-    '<tr class="sub"><td class="first">合计</td><td class="num">' + acct(total) +
-    '</td></tr></tbody></table></div>' +
-    '<h5 class="dsub">分录 ' + txns.length.toLocaleString() + ' 笔' +
-      (txns.length > 200 ? '（金额最大的 200 笔）' : "") + '</h5>' +
-    '<div class="tscroll"><table class="dtab"><thead><tr><th class="first">日期</th><th>公司</th>' +
-    '<th>单号</th><th>摘要</th><th>科目</th><th class="num">金额</th></tr></thead><tbody>' +
-    (txns.length ? txns.slice(0, 200).map(function (t2) {
-      return '<tr><td class="first mono">' + esc(t2.date) + '</td><td class="mono">' + esc(t2.co) +
-        '</td><td class="mono">' + esc(t2.ref || "—") + '</td><td>' + esc(t2.desc || "—") +
-        '</td><td>' + esc(t2.accName) + '<span class="sub2">' + esc(t2.acc) + '</span></td>' +
-        '<td class="num"><b>' + rm(t2.amt) + '</b></td></tr>'; }).join("")
-      : '<tr><td class="empty" colspan="6">这个期间没有分录。</td></tr>') + '</tbody></table></div>';
+  // ---------- level 2 ----------
+  if (openFig && openFig.acc) {
+    var pick = accs.filter(function (a2) { return a2.acc === openFig.acc; })[0] ||
+               { acc: openFig.acc, name: openFig.acc, v: 0 };
+    var txns = allT.filter(function (t2) { return t2.acc === openFig.acc; })
+      .sort(function (x, y) { return Math.abs(y.amt) - Math.abs(x.amt); });
+    return '<p class="dmeta">' +
+      '<button class="lnk figback" type="button" data-figback="1">← ' + esc(M.label) + '</button>' +
+      ' · <b>' + esc(pick.name) + '</b> <span class="mono">' + esc(pick.acc) + '</span>' +
+      ' · ' + esc(period) + ' · RM ' + rm(pick.v) + '</p>' +
+      '<h5 class="dsub">' + bi("Transactions", "分录") + ' · ' + txns.length.toLocaleString() +
+        (txns.length > 200 ? '（largest 200 金额最大的 200 笔）' : "") + '</h5>' +
+      '<div class="tscroll"><table class="dtab"><thead><tr>' +
+      '<th class="first">' + bi("Date", "日期") + '</th><th>' + bi("Company", "公司") + '</th>' +
+      '<th>' + bi("Doc no", "单号") + '</th><th>' + bi("Description", "摘要") + '</th>' +
+      '<th class="num">' + bi("Amount", "金额") + '</th></tr></thead><tbody>' +
+      (txns.length ? txns.slice(0, 200).map(function (t2) {
+        return '<tr><td class="first mono">' + esc(t2.date) + '</td><td class="mono">' +
+          esc(t2.co) + '</td><td class="mono">' + esc(t2.ref || "—") + '</td><td>' +
+          esc(t2.desc || "—") + '</td><td class="num"><b>' + rm(t2.amt) + '</b></td></tr>';
+      }).join("") : '<tr><td class="empty" colspan="5">No entries 这个期间没有分录。</td></tr>') +
+      '</tbody></table></div>';
+  }
+
+  // ---------- level 1 ----------
+  return '<p class="dmeta"><b>' + esc(M.label) + '</b> · ' + esc(period) +
+    ' · RM ' + rm(total) + '</p>' +
+    '<h5 class="dsub">' + bi("By account", "组成科目") + ' · ' + accs.length + '</h5>' +
+    '<div class="tscroll"><table class="dtab"><thead><tr>' +
+    '<th class="first">' + bi("Account", "科目") + '</th>' +
+    '<th class="num">' + bi("Entries", "笔数") + '</th>' +
+    '<th class="num">' + bi("Amount", "金额") + '</th>' +
+    '<th class="num">' + bi("Share", "占比") + '</th></tr></thead><tbody>' +
+    accs.slice(0, 60).map(function (a2) {
+      return '<tr class="drill" data-figacc="' + esc(a2.acc) + '">' +
+        '<td class="first"><span class="mono">' + esc(a2.co) + '</span> ' +
+        '<span class="nm">' + esc(a2.name) + '</span><span class="sub2">' + esc(a2.acc) +
+        '</span></td><td class="num">' + (cnt[a2.acc] || 0).toLocaleString() + '</td>' +
+        '<td class="num">' + acct(a2.v) + '</td><td class="num">' +
+        (total ? ((a2.v / total) * 100).toFixed(1) + "%" : "—") + '</td></tr>'; }).join("") +
+    '<tr class="sub"><td class="first">' + bi("Total", "合计") + '</td>' +
+    '<td class="num">' + allT.length.toLocaleString() + '</td>' +
+    '<td class="num">' + acct(total) + '</td><td class="num">100%</td></tr>' +
+    '</tbody></table></div>' +
+    '<p class="hint">Click an account to see the documents behind it. 点一个科目，看它背后的分录。</p>';
 }
 
 function viewVrgfp(list, months, cm) {
@@ -1901,7 +2037,7 @@ function viewVrgfp(list, months, cm) {
   var cmS = cm ? vrgfpSeries(ent.list, cm) : null;
   var ct = cmS ? function (k) { return cmS[k].reduce(function (a, b) { return a + b; }, 0); } : null;
 
-  return vhead("成本结构 R−V=G，G−F=P",
+  return vhead("Cost Structure  R−V=G, G−F=P", "成本结构",
       "课程的成本模型。V 变化成本按量变化（获客＋交付），F 固定成本按量不变（运营＋贬值）。" +
       "点任何数字看它由哪些科目、哪些分录组成。") +
     '<div class="enttabs">' + ents.map(function (e) {
@@ -1937,7 +2073,7 @@ function viewVrgfp(list, months, cm) {
     '</section>' +
     (openFig && VRGFP_META[openFig.line]
       ? '<section class="card figpanel" id="figpanel"><div class="lhead">' +
-        '<h3>数字来源 · ' + esc(VRGFP_META[openFig.line].label) +
+        '<h3>Where this number comes from 数字来源 · ' + esc(VRGFP_META[openFig.line].label) +
         (openFig.ym ? " · " + esc(openFig.ym) : " · 期间合计") + '</h3>' +
         '<button class="close" type="button" id="figClose">关闭</button></div>' +
         vrgfpDetail(ent.list, months, openFig.line, openFig.ym) + '</section>'
@@ -2044,9 +2180,9 @@ function viewProduct(list, months) {
         : W < 0.5 ? '<p class="hint" style="color:var(--serious)">⚠ 超过一半的成本还在按收入比例分摊，' +
         '所以下表每条线的 GP% 会趋于相同 —— 那是分摊的结果，不是真实差异。' +
         '要让这张表有意义，需要指定下面那些科目属于哪个 project。</p>' : "") +
-      '<div class="tscroll"><table class="dtab pnl"><thead><tr><th class="first">项目 Project</th>' +
-      '<th class="num">收入 R</th><th class="num">变化成本 V</th><th class="num">毛利 G</th>' +
-      '<th class="num">GP%</th><th class="num">固定成本 F</th><th class="num">净利 P</th>' +
+      '<div class="tscroll"><table class="dtab pnl"><thead><tr><th class="first">' + bi("Project", "项目") + '</th>' +
+      '<th class="num">' + bi("Revenue R", "收入") + '</th><th class="num">' + bi("Variable cost V", "变化成本") + '</th><th class="num">' + bi("Gross profit G", "毛利") + '</th>' +
+      '<th class="num">GP%</th><th class="num">' + bi("Fixed cost F", "固定成本") + '</th><th class="num">' + bi("Net profit P", "净利") + '</th>' +
       '<th class="num">NP%</th></tr></thead><tbody>' + d.rows.map(function (r) {
         return '<tr><td class="first nm">' + esc(r.p) + '</td>' +
           '<td class="num">' + acct(r.R) + '</td><td class="num">' + acct(-r.V) + '</td>' +
@@ -2082,7 +2218,7 @@ function viewProduct(list, months) {
         '</tbody></table></div>' : "") + '</section>';
   }).join("");
 
-  return vhead("分析产品 GP by Project", "课程 P33 的表。收入只算已确认、且排除非营业收入。" +
+  return vhead("GP by Project", "分产品毛利", "课程 P33 的表。收入只算已确认、且排除非营业收入。" +
       (PMAP._sharedCostMethod === "direct-only"
         ? "成本只算能直接归属的，共用成本单独列一行、不分摊。"
         : "成本先看有没有指定归属，没有的按各 project 的收入比例分摊。")) +
@@ -2122,9 +2258,9 @@ function viewSource() {
     "作废单据已排除（Cancelled='T'）。AutoCount 的作废单仍保留金额，不排除会虚增应收。",
     "账龄以到期日计算，不是开单日。",
   ];
-  return vhead("资料来源", "每个数字的算法、来源表与筛选条件。各页 KPI 卡右上角的 ⓘ 会列出组成明细。") +
+  return vhead("Data Source", "资料来源", "每个数字的算法、来源表与筛选条件。各页 KPI 卡右上角的 ⓘ 会列出组成明细。") +
     '<section class="card"><h3>指标算法</h3><div class="tscroll"><table class="dtab"><thead><tr>' +
-    '<th class="first">指标</th><th>公式</th><th>来源表</th></tr></thead><tbody>' +
+    '<th class="first">' + bi("Metric", "指标") + '</th><th>' + bi("Formula", "公式") + '</th><th>' + bi("Source table", "来源表") + '</th></tr></thead><tbody>' +
     METRICS.map(function (r) {
       return '<tr><td class="first nm">' + esc(r[0]) + '</td><td class="mono" style="font-size:11.5px">' +
         esc(r[1]) + '</td><td class="mono" style="font-size:11.5px">' + esc(r[2]) + '</td></tr>';
@@ -2142,21 +2278,21 @@ function viewSource() {
 }
 
 function renderControls() {
-  document.getElementById("cFilters").innerHTML = '<span class="clab">公司</span>' +
+  document.getElementById("cFilters").innerHTML = '<span class="clab">' + bi("Company", "公司") + '</span>' +
     LIVE.map(function (c) {
       return '<button class="pill" type="button" aria-pressed="' + sel.has(c.short) +
         '" data-co="' + esc(c.short) + '">' + esc(c.short) + '</button>'; }).join("") +
     '<span class="csep"></span>' +
-    '<button class="pill quick" type="button" data-quick="all">全选</button>' +
-    '<button class="pill quick" type="button" data-quick="active">只看活跃</button>' +
-    '<button class="pill quick" type="button" data-quick="none">全不选</button>';
+    '<button class="pill quick" type="button" data-quick="all">Select all 全选</button>' +
+    '<button class="pill quick" type="button" data-quick="active">Active only 只看活跃</button>' +
+    '<button class="pill quick" type="button" data-quick="none">Clear 全不选</button>';
 
   var opts = function (s) {
     return ALLM.map(function (m) {
       return '<option value="' + m + '"' + (m === s ? " selected" : "") + '>' + m + '</option>';
     }).join("");
   };
-  document.getElementById("cRange").innerHTML = '<span class="clab">期间</span>' +
+  document.getElementById("cRange").innerHTML = '<span class="clab">' + bi("Period", "期间") + '</span>' +
     '<select id="fromSel">' + opts(range.from) + '</select><span class="cnote">到</span>' +
     '<select id="toSel">' + opts(range.to) + '</select><span class="csep"></span>' +
     [["6", "近 6 月"], ["12", "近 12 月"], ["24", "近 24 月"], ["ytd", "今年至今"],
@@ -2165,14 +2301,14 @@ function renderControls() {
         '</button>'; }).join("") +
     '<span class="cnote">共 ' + curMonths().length + ' 个月</span>';
 
-  document.getElementById("cCmp").innerHTML = '<span class="clab">比较</span>' +
+  document.getElementById("cCmp").innerHTML = '<span class="clab">' + bi("Compare", "比较") + '</span>' +
     [["none", "不比较"], ["yoy", "去年同期"], ["prev", "前一期"]].map(function (p) {
       return '<button class="pill" type="button" aria-pressed="' + (cmpMode === p[0]) +
         '" data-cmp="' + p[0] + '">' + p[1] + '</button>'; }).join("") +
     (cmpMode !== "none" ? '<span class="cnote">' + cmpMonths()[0] + " → " +
       cmpMonths()[cmpMonths().length - 1] + '</span>' : "") +
     '<span class="csep"></span><button class="pill" type="button" aria-pressed="' + excludeInternal +
-    '" id="intToggle">排除户口间调拨</button>';
+    '" id="intToggle">Exclude internal transfers 排除户口间调拨</button>';
 }
 
 function renderRail(list, months) {
@@ -2192,8 +2328,8 @@ function renderRail(list, months) {
   document.getElementById("rail").innerHTML = TOPICS.map(function (t) {
     var n = counts[t.id];
     return '<li><button class="rnav" type="button" data-topic="' + t.id + '" aria-current="' +
-      (topic === t.id) + '"><span class="rlab">' + esc(t.label) +
-      '<span class="ren">' + esc(t.en) + '</span></span>' +
+      (topic === t.id) + '"><span class="rlab">' + esc(t.en) +
+      '<span class="ren">' + esc(t.label) + '</span></span>' +
       (n ? '<span class="rc' + (t.id === "alerts" ? " alert" : "") + '">' +
         n.toLocaleString() + '</span>' : "") + '</button></li>';
   }).join("");
@@ -2210,7 +2346,7 @@ function render() {
   var cm = cmpMonths();
   renderRail(list, months);
   var v = document.getElementById("view");
-  if (!list.length) { v.innerHTML = vhead("没有选中公司", "在上方挑一间公司来看。"); return; }
+  if (!list.length) { v.innerHTML = vhead("No company selected", "没有选中公司", "在上方挑一间公司来看。"); return; }
   if (topic === "overview") v.innerHTML = viewOverview(list, months, cm);
   else if (topic === "pnl") v.innerHTML = viewPnl(list, months, cm);
   else if (topic === "cash") v.innerHTML = viewCash(list, months);
@@ -2353,8 +2489,23 @@ document.getElementById("view").addEventListener("click", function (e) {
     return;
   }
   if (e.target.closest("#figClose")) { openFig = null; render(); return; }
+  // Level 1 -> level 2: open one account's documents.
+  var dr = e.target.closest("tr.drill");
+  if (dr && openFig) {
+    openFig = { line: openFig.line, acc: dr.dataset.figacc, ym: openFig.ym };
+    render();
+    return;
+  }
+  // Level 2 -> level 1.
+  if (e.target.closest("[data-figback]") && openFig) {
+    openFig = { line: openFig.line, acc: "", ym: openFig.ym };
+    render();
+    return;
+  }
   var m = e.target.closest("button[data-more]");
   if (m) { ledState(m.dataset.more).limit += 100; render(); return; }
+  var lt = e.target.closest("button[data-ledtog]");
+  if (lt) { var ls = ledState(lt.dataset.ledtog); ls.open = !ls.open; render(); return; }
   var cf = e.target.closest("button[data-cfmore]");
   if (cf) { cfOpen[cf.dataset.cfmore] = !cfOpen[cf.dataset.cfmore]; render(); return; }
   var th = e.target.closest("th.sortable");

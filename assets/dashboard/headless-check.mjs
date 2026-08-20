@@ -95,10 +95,17 @@ topics.forEach((t) => {
     const v = sinks.view || "";
     if (v.length < 200) { fail("topic '" + t + "' rendered almost nothing"); return; }
     if (LEDGER_TOPICS[t]) {
-      const rows = (v.match(/<tbody>[\s\S]*?<\/tbody>/g) || []).join("");
-      const trs = (rows.match(/<tr>/g) || []).length;
-      if (trs < 3) { fail("topic '" + t + "' ledger has no rows"); return; }
-      pass("topic '" + t + "' rendered (" + trs + " table rows)");
+      // Ledgers are collapsed by default now, so open every one on this topic
+      // before counting - otherwise this check would silently pass on an empty
+      // page and stop meaning anything.
+      run('Object.keys(led).forEach(function(k){ led[k].open = true; }); ' +
+          'topic = "' + t + '"; render();');
+      const opened = sinks.view || "";
+      const rows = (opened.match(/<tbody>[\s\S]*?<\/tbody>/g) || []).join("");
+      // Count any row, not only attribute-free ones - rows carry ids/classes now.
+      const trs = (rows.match(/<tr[\s>]/g) || []).length;
+      if (trs < 3) { fail("topic '" + t + "' ledger has no rows once opened"); return; }
+      pass("topic '" + t + "' rendered (" + trs + " table rows when opened)");
     } else {
       pass("topic '" + t + "' rendered");
     }
@@ -107,21 +114,31 @@ topics.forEach((t) => {
   }
 });
 
+// Ledgers must start collapsed - that is the whole point of the change.
+try {
+  run('Object.keys(led).forEach(function(k){ led[k].open = false; }); ' +
+      'topic = "cash"; render();');
+  const v0 = sinks.view || "";
+  if (/data-ledtog/.test(v0) && /ledcollapsed/.test(v0))
+    pass("ledgers start collapsed, with a count and a way to open them");
+  else fail("ledger did not start collapsed");
+} catch (e) { fail("collapsed-default check threw: " + e.message); }
+
 // Ledger search must narrow the result set.
 try {
-  run('topic = "cash"; render();');
-  const before = (sinks.view.match(/(\d[\d,]*) 笔/) || [])[1];
+  run('topic = "cash"; ledState("cash").open = true; render();');
+  const before = (sinks.view.match(/(\d[\d,]*) entries/) || [])[1];
   run('ledState("cash").q = "COMMISSION"; render();');
-  const after = (sinks.view.match(/(\d[\d,]*) 笔/) || [])[1];
+  const after = (sinks.view.match(/(\d[\d,]*) entries/) || [])[1];
   const n = (s) => Number(String(s || "0").replace(/,/g, ""));
-  if (n(after) > 0 && n(after) < n(before)) pass("ledger search: " + before + " → " + after + " 笔");
+  if (n(after) > 0 && n(after) < n(before)) pass("ledger search: " + before + " → " + after + " entries");
   else fail("ledger search did not narrow: " + before + " → " + after);
   run('ledState("cash").q = ""; render();');
 } catch (e) { fail("ledger search threw: " + e.message); }
 
 // Sorting must not throw and must flip the arrow.
 try {
-  run('var st = ledState("cash"); st.sort = 7; st.dir = -1; topic = "cash"; render();');
+  run('var st = ledState("cash"); st.open = true; st.sort = 7; st.dir = -1; topic = "cash"; render();');
   if (/▼/.test(sinks.view)) pass("ledger sort by amount works");
   else fail("sort indicator missing");
 } catch (e) { fail("ledger sort threw: " + e.message); }
@@ -196,11 +213,14 @@ try {
   run('sel = new Set(LIVE.map(function(c){return c.short;})); applyPreset("12"); ' +
       'cmpMode = "none"; pnlEntity = "__all__"; topic = "pnl"; renderControls(); render();');
   const v = sinks.view;
-  ["销售 Sales", "营业收入 Revenue", "销货成本 Cost of sales", "毛利 Gross profit",
-   "毛利率 GP%", "营业费用 Operating expenses", "净利 Net profit"].forEach((line) => {
-    if (v.indexOf(line) === -1) fail("P&L statement missing line: " + line);
+  // Rows are found by their stable id, not by the label they happen to display.
+  // Keying on visible text meant every wording change broke the suite - and
+  // worse, a label typo could have made a row silently "missing".
+  ["SL", "REV", "CO", "GP", "GPR", "EP", "NP"].forEach((id) => {
+    if (v.indexOf('data-row="' + id + '"') === -1)
+      fail("P&L statement missing line: " + id);
   });
-  if (/合计 Total/.test(v)) pass("P&L statement renders all lines with a total column");
+  if (/>Total</.test(v)) pass("P&L statement renders all lines with a total column");
 
   if (/\(\d[\d,]*\)/.test(v)) pass("negatives shown in parentheses");
   else fail("no parenthesised negatives found in the statement");
@@ -211,28 +231,24 @@ try {
 
   // Revenue - cost of sales - opex must equal net profit in the Total column.
   const totals = {};
-  ["营业收入 Revenue", "销货成本 Cost of sales", "营业费用 Operating expenses",
-   "净利 Net profit"].forEach((line) => {
-    const row = v.split('<td class="first">' + line + "</td>")[1];
+  ["REV", "CO", "EP", "NP"].forEach((id) => {
+    const row = v.split('data-row="' + id + '"')[1];
     if (!row) return;
     const cells = row.split("</tr>")[0].match(/<td class="num fig[^"]*tcol[^"]*"[^>]*>([^<]+)</);
     if (cells) {
       const raw = cells[1].trim();
       const neg = raw.startsWith("(");
-      totals[line] = raw === "—" ? 0
-        : (neg ? -1 : 1) * Number(raw.replace(/[(),]/g, ""));
+      totals[id] = raw === "—" ? 0 : (neg ? -1 : 1) * Number(raw.replace(/[(),]/g, ""));
     }
   });
-  const chk = totals["营业收入 Revenue"] + totals["销货成本 Cost of sales"] +
-              totals["营业费用 Operating expenses"];
-  if (Math.abs(chk - totals["净利 Net profit"]) <= 2) {
-    pass("statement ties: 收入 " + totals["营业收入 Revenue"].toLocaleString() +
-         " + 成本 " + totals["销货成本 Cost of sales"].toLocaleString() +
-         " + 费用 " + totals["营业费用 Operating expenses"].toLocaleString() +
-         " = 净利 " + totals["净利 Net profit"].toLocaleString());
+  const chk = totals["REV"] + totals["CO"] + totals["EP"];
+  if (Math.abs(chk - totals["NP"]) <= 2) {
+    pass("statement ties: revenue " + totals["REV"].toLocaleString() +
+         " + cost " + totals["CO"].toLocaleString() +
+         " + opex " + totals["EP"].toLocaleString() +
+         " = net " + totals["NP"].toLocaleString());
   } else {
-    fail("statement does not tie: computed " + chk + " vs net profit " +
-         totals["净利 Net profit"]);
+    fail("statement does not tie: computed " + chk + " vs net profit " + totals["NP"]);
   }
 
   // Switching entity must change the statement - but only a group of two or more
@@ -279,16 +295,34 @@ try {
   else pass("收入科目 / 支出科目 / 损益分录 removed from P&L");
 } catch (e) { fail("removal check threw: " + e.message); }
 
-// Clicking a figure must open a detail panel with accounts and transactions.
+// The drill-down is two levels on purpose: a figure opens the accounts that
+// compose it, and only then does one account open its documents. The previous
+// version of this check looked for the words "组成科目" and "分录" anywhere in
+// the panel - and "分录" appears in the level-one hint text, so it passed
+// without a single transaction being rendered.
 try {
   run('pnlLevel = 1; openFig = { line: "EP", acc: "", ym: "" }; render();');
-  const v = sinks.view;
-  if (!/figpanel/.test(v)) fail("figure panel did not open");
-  else if (!/组成科目/.test(v) || !/分录/.test(v)) fail("figure panel missing composition or ledger");
+  const lvl1 = sinks.view;
+  const accRows = (lvl1.match(/<tr class="drill" data-figacc="/g) || []).length;
+  if (!/figpanel/.test(lvl1)) fail("figure panel did not open");
+  else if (!accRows) fail("level 1 showed no account rows");
+  else if (/<th[^>]*>[\s\S]{0,80}Doc no/.test(lvl1))
+    fail("level 1 already shows the transaction table - drill-down is not staged");
+  else pass("drill-down level 1: " + accRows + " account rows, no transactions yet");
+
+  // Level 2: pick the first account the panel offered and open it.
+  const firstAcc = (lvl1.match(/data-figacc="([^"]+)"/) || [])[1];
+  if (!firstAcc) fail("level 1 offered no account to drill into");
   else {
-    const rows = (v.split("数字来源")[1].match(/<tr>/g) || []).length;
-    pass("figure drill-down opens with " + rows + " detail rows");
+    run('openFig = { line: "EP", acc: ' + JSON.stringify(firstAcc) + ', ym: "" }; render();');
+    const lvl2 = sinks.view;
+    const txnRows = (lvl2.match(/<tr><td class="first mono">/g) || []).length;
+    if (!txnRows) fail("level 2 showed no transactions for " + firstAcc);
+    else if (!/data-figback/.test(lvl2)) fail("level 2 has no way back to level 1");
+    else pass("drill-down level 2: " + txnRows + " transactions for " + firstAcc +
+              ", with a back link");
   }
+  run('openFig = { line: "EP", acc: "", ym: "" }; render();');
   // A subtotal explains itself through its components instead.
   run('openFig = { line: "NP", acc: "", ym: "" }; render();');
   if (/减 营业费用/.test(sinks.view)) pass("subtotal figure shows its composition");
@@ -348,11 +382,24 @@ try {
     fail("成本结构对不上：R=" + R + " V=" + V + " G=" + G + " F=" + F + " P=" + P);
   }
 
-  // A figure must drill to its accounts.
+  // A figure drills to its accounts first, and only then to the documents.
+  // The old version matched the words "组成科目" and "分录" anywhere, and the
+  // level-one hint contains "分录" - so it passed with zero transactions shown.
   run('openFig = { line: "Va", acc: "", ym: "" }; render();');
-  if (/组成科目/.test(sinks.view) && /分录/.test(sinks.view))
-    pass("成本结构可点数字展开来源");
-  else fail("成本结构的数字来源面板没有出现");
+  const vg1 = sinks.view;
+  const vgAcc = (vg1.match(/<tr class="drill" data-figacc="/g) || []).length;
+  const vgPick = (vg1.match(/data-figacc="([^"]+)"/) || [])[1];
+  if (!vgAcc) fail("成本结构 level 1 没有列出科目");
+  else if (/<th[^>]*>[\s\S]{0,80}Doc no/.test(vg1))
+    fail("成本结构 level 1 就已经显示分录，没有分层");
+  else {
+    run('openFig = { line: "Va", acc: ' + JSON.stringify(vgPick || "") + ', ym: "" }; render();');
+    const vg2 = sinks.view;
+    const vgTx = (vg2.match(/<tr><td class="first mono">/g) || []).length;
+    if (vgTx && /data-figback/.test(vg2))
+      pass("成本结构分层下钻：" + vgAcc + " 个科目 → " + vgTx + " 笔分录，有返回");
+    else fail("成本结构 level 2 没有分录或没有返回连结");
+  }
   run('openFig = null; render();');
 } catch (e) { fail("成本结构 threw: " + e.message); }
 
