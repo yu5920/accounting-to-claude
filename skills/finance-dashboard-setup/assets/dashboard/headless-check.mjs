@@ -408,6 +408,151 @@ try {
   run('openFig = null; render();');
 } catch (e) { fail("成本结构 threw: " + e.message); }
 
+// One number parser for every reconciliation below. Writing this twice is how
+// the first version silently scored every row as zero: String.match with /g
+// returns whole matches including the trailing "<", and a tag-stripping regex
+// does not remove a bare angle bracket.
+const cellNum = (t) => {
+  const raw = String(t || "").replace(/[^\d.()-]/g, "");
+  if (!raw) return null;
+  const neg = raw.indexOf("(") === 0;
+  const n = Number(raw.replace(/[(),]/g, ""));
+  return Number.isFinite(n) ? (neg ? -n : n) : null;
+};
+
+// The whole page script lives inside a template literal in render-dashboard.mjs,
+// so a backtick anywhere in it - including inside a comment - ends the string and
+// produces a syntax error a long way from its cause. Caught this three times by
+// hand; catching it here costs nothing.
+try {
+  const script = (readFileSync("dashboard.html", "utf8")
+    .match(/<script>\n"use strict";([\s\S]*?)<\/script>/) || ["", ""])[1];
+  const ticks = (script.match(/`/g) || []).length;
+  if (ticks) fail("页面脚本里有 " + ticks + " 个反引号 —— 会截断 template literal");
+  else pass("页面脚本无反引号（template literal 安全）");
+} catch (e) { fail("反引号巡检 threw: " + e.message); }
+
+// Cross-source reconciliation: two independent computations of the same figure
+// must agree. c.ar.total is aged from documents inside build-data-cloud; the
+// outstanding panel re-derives it in the page from the document list. If those
+// ever drift apart, one of them is wrong and neither would look it.
+try {
+  run('openParty = null; topic = "ar"; render();');
+  const kpiAr = (() => {
+    const m = sinks.view.match(/未收合计[\s\S]{0,240}?RM\s*([\d,]+)/);
+    return m ? Number(m[1].replace(/,/g, "")) : null;
+  })();
+  const panelAr = (() => {
+    const seg = (sinks.view.split("Outstanding by customer")[1] || "");
+    const rows = seg.match(/<tr class="sub"><td class="first">[\s\S]*?<\/tr>/);
+    const m = rows ? rows[0].match(/([\d,]+(?:\.\d+)?)/) : null;
+    return m ? Number(m[1].replace(/,/g, "")) : null;
+  })();
+  if (kpiAr === null || panelAr === null) skip("应收双来源对帐 — 抓不到其中一个数字");
+  else if (Math.abs(kpiAr - panelAr) <= 2)
+    pass("应收双来源一致：帐龄算出 " + kpiAr.toLocaleString() +
+         "，单据汇总 " + panelAr.toLocaleString());
+  else fail("应收两套算法不一致：帐龄 " + kpiAr + " vs 单据汇总 " + panelAr);
+} catch (e) { fail("应收双来源对帐 threw: " + e.message); }
+
+// The cost-structure panel has to tie to its own face the same way the P&L does.
+try {
+  run('openFig = null; topic = "vrgfp"; cmpMode = "none"; applyPreset("12"); ' +
+      'renderControls(); render();');
+  const bad = [];
+  ["Va", "Vd", "Fo", "Fa"].forEach((id) => {
+    run('openFig = { line: "' + id + '", acc: "", ym: "" }; render();');
+    const v = sinks.view;
+    if (!/class="dmeta"/.test(v)) return;
+    const panel = (v.match(/class="dmeta"[\s\S]*?RM\s*([\d,]+)/) || [])[1];
+    const rowsSum = (v.match(/<tr class="drill" data-figacc[\s\S]*?<\/tr>/g) || [])
+      .reduce((t, r) => {
+        const cells = r.match(/<td class="num">([^<]*)</g) || [];
+        if (cells.length < 2) return t;
+        return t + (cellNum(cells[1]) || 0);
+      }, 0);
+    if (panel === undefined) return;
+    const pv = Number(panel.replace(/,/g, ""));
+    if (Math.abs(Math.abs(pv) - Math.abs(rowsSum)) > 2)
+      bad.push(id + ": meta " + pv + " vs rows " + rowsSum);
+  });
+  run('openFig = null; render();');
+  if (bad.length) fail("成本结构面板合计与科目列对不上：" + bad.join("; "));
+  else pass("成本结构面板：合计与组成科目相符");
+} catch (e) { fail("成本结构对帐 threw: " + e.message); }
+
+// RECONCILIATION: the number you clicked must equal the number the panel shows.
+//
+// This is the invariant a real bug broke - drilling from a comparison figure
+// kept the comparison heading but fetched this period's documents, so the panel
+// disagreed with the cell that opened it and nothing said so. Checking totals
+// tie is the only way that class of fault gets caught, because both numbers look
+// perfectly reasonable on their own.
+try {
+  // The panel prints "· RM <total>" in its meta line.
+  const panelTotal = () => {
+    const m = (sinks.view.match(/class="dmeta"[\s\S]*?<\/p>/) || [""])[0];
+    const r = m.match(/RM\s*([\d,]+(?:\.\d+)?)/);
+    return r ? Number(r[1].replace(/,/g, "")) : null;
+  };
+  // The statement cell for one line, in one scope.
+  const cellValue = (line, isCmp) => {
+    const row = (sinks.view.split('data-row="' + line + '"')[1] || "").split("</tr>")[0];
+    const re = isCmp
+      ? /<td class="num fig[^"]*cmpcol[^"]*"[^>]*>([^<]+)</
+      : /<td class="num fig[^"]*tcol[^"]*"[^>]*>([^<]+)</;
+    const m = row.match(re);
+    return m ? cellNum(m[1]) : null;
+  };
+
+  const LINES = ["SL", "OI", "CO", "EP"];   // lines with their own accounts
+  const bad = [];
+  let checked = 0;
+
+  [["none", false], ["yoy", true], ["prev", true]].forEach(([mode, isCmp]) => {
+    run('cmpMode = "' + mode + '"; applyPreset("12"); topic = "pnl"; pnlLevel = 1; ' +
+        'openFig = null; renderControls(); render();');
+    LINES.forEach((line) => {
+      const face = cellValue(line, isCmp);
+      if (face === null) return;
+      // Level 1: the accounts panel total must equal the figure on the face.
+      run('openFig = { line: "' + line + '", acc: "", ym: "", cmp: ' + isCmp + ' }; render();');
+      const lvl1 = panelTotal();
+      checked++;
+      if (lvl1 === null || Math.abs(Math.abs(lvl1) - Math.abs(face)) > 2)
+        bad.push(mode + "/" + line + " level1: face " + face + " vs panel " + lvl1);
+
+      // Level 2: each account's own documents must sum to its row in level 1.
+      const first = (sinks.view.match(/data-figacc="([^"]+)"/) || [])[1];
+      const rowAmt = (() => {
+        const seg = (sinks.view.split('data-figacc="' + first + '"')[1] || "").split("</tr>")[0];
+        const cells = seg.match(/<td class="num">([^<]*)</g) || [];
+        return cells.length >= 2 ? cellNum(cells[1]) : null;
+      })();
+      if (first && rowAmt !== null) {
+        run('openFig.acc = ' + JSON.stringify(first) + '; render();');
+        const lvl2 = panelTotal();
+        checked++;
+        if (lvl2 === null || Math.abs(Math.abs(lvl2) - Math.abs(rowAmt)) > 2)
+          bad.push(mode + "/" + line + "/" + first + " level2: row " + rowAmt + " vs panel " + lvl2);
+        // And the heading must name the scope it actually fetched.
+        const meta = (sinks.view.match(/class="dmeta"[\s\S]*?<\/p>/) || [""])[0]
+          .replace(/<[^>]*>/g, " ");
+        const saysCmp = /去年同期|前一期/.test(meta);
+        if (saysCmp !== isCmp)
+          bad.push(mode + "/" + line + "/" + first + " level2 scope mislabelled: " +
+                   meta.replace(/\s+/g, " ").trim().slice(0, 70));
+      }
+      run('openFig = { line: "' + line + '", acc: "", ym: "", cmp: ' + isCmp + ' }; render();');
+    });
+  });
+
+  run('openFig = null; cmpMode = "none"; applyPreset("12"); renderControls(); render();');
+  if (bad.length) fail("下钻总额对不上（" + bad.length + "/" + checked + "）：\n      " +
+                       bad.slice(0, 6).join("\n      "));
+  else pass("下钻总额全部对得上：" + checked + " 组（含本期／去年同期／前一期，两个层级）");
+} catch (e) { fail("对帐稽核 threw: " + e.message); }
+
 // With a comparison on, the statement drops the monthly columns and compares
 // period totals - and the percentages it prints have to be meaningful ones.
 try {

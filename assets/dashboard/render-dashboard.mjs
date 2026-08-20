@@ -1036,6 +1036,19 @@ function cfMonthly(list, months) {
   });
 }
 
+// Renders at most cap rows and, when there are more, a disclosed remainder row
+// so the column still adds up to the footer. Cutting the list while totalling all
+// of it leaves a reader unable to reconcile a table against its own total, with
+// nothing on screen admitting the gap.
+function linRows(rows, cap, render, valOf) {
+  var head = rows.slice(0, cap).map(render).join("");
+  if (rows.length <= cap) return head;
+  var rest = rows.slice(cap);
+  var restVal = sum(rest, valOf);
+  return head + '<tr class="ratio"><td class="first"><span class="nm">Others 其余 ' +
+    rest.length + ' 个科目</span></td><td class="num">' + rm(restVal) + '</td></tr>';
+}
+
 function linTable(headers, rowsHtml, totalLabel, totalVal) {
   return '<div class="tscroll"><table class="dtab"><thead><tr>' +
     headers.map(function (h, i) {
@@ -1053,14 +1066,14 @@ var LINEAGE = {
                     kind: a.kind === "SBK" ? "银行" : "现金", v: a.bal }); });
     });
     rows.sort(function (x, y) { return x.v - y.v; });
-    return { formula: "Σ (HomeDR − HomeCR)，全期累计，不受期间筛选影响",
-      tables: "GLMast · GLDTL", filters: "GLMast.SpecialAccType IN ('SBK','SCH')",
+    return { formula: "银行/现金科目分录的借方减贷方，自开帐累加，不受期间筛选影响",
+      tables: "重构总帐（发票 · 采购发票 · 贷记单 · 收付款 · 日记帐）", filters: "GLMast.SpecialAccType IN ('SBK','SCH')",
       note: "负数是贷方余额，可能是透支额度，也可能是有款项未入账。",
       html: linTable(["公司 · 户口", "余额"], rows.map(function (r) {
         return '<tr><td class="first"><span class="mono">' + esc(r.co) + '</span> ' + esc(r.name) +
           '<span class="sub2">' + esc(r.acc) + " · " + esc(r.kind) + '</span></td>' +
           '<td class="num ' + (r.v < 0 ? "neg" : "") + '">' + rm(r.v) + '</td></tr>';
-      }).join(""), "合计", sum(rows, function (r) { return r.v; })) };
+      }, function (r) { return r.v; }), "合计", sum(rows, function (r) { return r.v; })) };
   },
   revenue: function (list, months) {
     var rows = [];
@@ -1070,14 +1083,14 @@ var LINEAGE = {
         if (v !== 0) rows.push({ co: c.short, name: a.name, acc: a.acc, typ: a.type, v: v }); });
     });
     rows.sort(function (x, y) { return y.v - x.v; });
-    return { formula: "Σ (HomeCR − HomeDR)，期间内", tables: "GLMast · GLDTL",
-      filters: "AccType IN ('SL','OI') 且 TransDate 落在 " + range.from + " ~ " + range.to,
+    return { formula: "收入科目分录的贷方减借方，期间内", tables: "重构总帐（发票 · 采购发票 · 贷记单 · 收付款 · 日记帐）",
+      filters: "科目类型 SL / OI / SA，单据日期落在 " + range.from + " ~ " + range.to,
       note: "SL＝销售，OI＝其他收入。开在 CL（负债）科目的预收款不算在内。",
-      html: linTable(["公司 · 科目", "金额"], rows.slice(0, 80).map(function (r) {
+      html: linTable(["公司 · 科目", "金额"], linRows(rows, 80, function (r) {
         return '<tr><td class="first"><span class="mono">' + esc(r.co) + '</span> ' + esc(r.name) +
           '<span class="sub2">' + esc(r.acc) + " · " + esc(r.typ) + '</span></td>' +
           '<td class="num">' + rm(r.v) + '</td></tr>';
-      }).join(""), "合计", sum(rows, function (r) { return r.v; })) };
+      }, function (r) { return r.v; }), "合计", sum(rows, function (r) { return r.v; })) };
   },
   cost: function (list, months) {
     var rows = [];
@@ -1087,10 +1100,10 @@ var LINEAGE = {
         if (v !== 0) rows.push({ co: c.short, name: a.name, acc: a.acc, v: v }); });
     });
     rows.sort(function (x, y) { return y.v - x.v; });
-    return { formula: "Σ (HomeDR − HomeCR)，期间内", tables: "GLMast · GLDTL",
-      filters: "AccType IN ('EP','CO') 且 TransDate 落在 " + range.from + " ~ " + range.to,
+    return { formula: "成本费用科目分录的借方减贷方，期间内", tables: "重构总帐（发票 · 采购发票 · 贷记单 · 收付款 · 日记帐）",
+      filters: "科目类型 EP / CO，单据日期落在 " + range.from + " ~ " + range.to,
       note: "EP＝费用，CO＝成本。负数是费用冲回，已计入合计。",
-      html: linTable(["公司 · 科目", "金额"], rows.slice(0, 80).map(function (r) {
+      html: linTable(["公司 · 科目", "金额"], linRows(rows, 80, function (r) {
         return '<tr><td class="first"><span class="mono">' + esc(r.co) + '</span> ' + esc(r.name) +
           '<span class="sub2">' + esc(r.acc) + '</span></td>' +
           '<td class="num' + (r.v < 0 ? " pos" : "") + '">' + rm(r.v) + '</td></tr>';
@@ -1099,7 +1112,7 @@ var LINEAGE = {
   billings: function (list, months) {
     var rows = list.map(function (c) { return { co: c.short, v: billingsOf(c, months) }; })
       .filter(function (r) { return r.v !== 0; }).sort(function (x, y) { return y.v - x.v; });
-    return { formula: "Σ ARInvoice.LocalNetTotal，期间内", tables: "ARInvoice",
+    return { formula: "销售发票不含税净额合计，期间内，排除作废", tables: "销售发票 invoice",
       filters: "Cancelled = 'F' 且 DocDate 落在 " + range.from + " ~ " + range.to,
       note: "含开在负债科目的预收款，所以会大于已确认收入。",
       html: linTable(["公司", "开单额"], rows.map(function (r) {
@@ -1113,7 +1126,7 @@ var LINEAGE = {
         .forEach(function (l) { rows.push({ co: c.short, name: l.name, acc: l.acc, v: l.bal }); });
     });
     rows.sort(function (x, y) { return y.v - x.v; });
-    return { formula: "Σ (HomeCR − HomeDR)，全期累计", tables: "GLMast · GLDTL",
+    return { formula: "负债科目分录的贷方减借方，自开帐累加", tables: "重构总帐（发票 · 采购发票 · 贷记单 · 收付款 · 日记帐）",
       filters: "AccType = 'CL' 且科目名称含 UNRECOGNISED / UNEARNED / DEFERRED / DEPOSIT / ADVANCE",
       note: "以科目名称关键字辨识，属推测分类 —— 请核对有无漏抓或误抓。",
       html: rows.length ? linTable(["公司 · 科目", "余额"], rows.map(function (r) {
@@ -1129,8 +1142,8 @@ var LINEAGE = {
       return { co: c.short, total: c.ar.total, over: c.ar.overdue, o90: c.ar.over90,
                d: dsoOf(c, months) };
     }).filter(function (r) { return r.total > 0; }).sort(function (x, y) { return y.over - x.over; });
-    return { formula: "Σ ARInvoice.Outstanding；账龄以 DueDate 与今天相差天数分组",
-      tables: "ARInvoice", filters: "Cancelled = 'F' 且 Outstanding > 0（当下位置）",
+    return { formula: "销售发票未结金额；帐龄以到期日与今天相差天数分组",
+      tables: "销售发票 invoice", filters: "Cancelled = 'F' 且 Outstanding > 0（当下位置）",
       note: "DSO ＝ 未收 ÷ (期间收入 ÷ 期间天数)。",
       html: linTable(["公司", "未收", "其中逾期", "90天以上", "DSO"], rows.map(function (r) {
         return '<tr><td class="first nm">' + esc(r.co) + '</td><td class="num">' + rm(r.total) +
@@ -1157,7 +1170,7 @@ function cfLineage(list, months, dir) {
     filters: "银行科目 SpecialAccType IN ('SBK','SCH')，依 DEAccNo 分组，" +
              range.from + " ~ " + range.to + (excludeInternal ? "，已排除户口间调拨" : ""),
     note: "对方科目就是钱的来源或去向。AutoCount 每一笔银行分录都有填 DEAccNo。",
-    html: rows.length ? linTable(["公司 · 对方科目", "金额"], rows.slice(0, 80).map(function (r) {
+    html: rows.length ? linTable(["公司 · 对方科目", "金额"], linRows(rows, 80, function (r) {
       return '<tr><td class="first"><span class="mono">' + esc(r.co) + '</span> ' + esc(r.name) +
         '<span class="sub2">' + esc(r.acc) + " · " + esc(r.typ) + " · " + r.lines +
         ' 笔</span></td><td class="num ' + (dir === "in" ? "inflow" : "outflow") + '">' + rm(r.v) +
@@ -1532,6 +1545,21 @@ function pct1(n) { return (n === null || !isFinite(n)) ? "—" : (n * 100).toFix
 
 // Splits the ledger into statement lines for one set of companies.
 // SL = sales, OI = other income, CO = cost of sales, EP = operating expense.
+// One place decides which statement line an account belongs to.
+//
+// This used to be decided twice: the statement classified with a catch-all else
+// and the drill-down with strict equality, so a Sales Adjustment account (a
+// customer refund) was folded into Other income on the face of the statement and
+// appeared in no panel at all. The face and the panel disagreed by the whole
+// refund, and both looked perfectly plausible.
+//
+// A refund is a deduction from sales, not a kind of income, so SA sits with SL.
+// Revenue is unchanged either way; this is about where an accountant looks for it.
+function pnlLineOf(a, fromRevenue) {
+  if (fromRevenue) return (a.type === "SL" || a.type === "SA") ? "SL" : "OI";
+  return a.type === "CO" ? "CO" : "EP";
+}
+
 function pnlSeries(list, months) {
   var z = function () { return months.map(function () { return 0; }); };
   var sl = z(), oi = z(), co = z(), ep = z();
@@ -1540,14 +1568,14 @@ function pnlSeries(list, months) {
       months.forEach(function (m, i) {
         var v = (a.m || {})[m] || 0;
         if (!v) return;
-        if (a.type === "SL") sl[i] += v; else oi[i] += v;
+        if (pnlLineOf(a, true) === "SL") sl[i] += v; else oi[i] += v;
       });
     });
     (c.expenses || []).forEach(function (a) {
       months.forEach(function (m, i) {
         var v = (a.m || {})[m] || 0;
         if (!v) return;
-        if (a.type === "CO") co[i] += v; else ep[i] += v;
+        if (pnlLineOf(a, false) === "CO") co[i] += v; else ep[i] += v;
       });
     });
   });
@@ -1561,9 +1589,10 @@ function pnlSeries(list, months) {
 function pnlAccounts(list, months, kind) {
   var byAcc = {};
   list.forEach(function (c) {
-    var src = (kind === "SL" || kind === "OI") ? c.revenueAccounts : c.expenses;
+    var fromRev = (kind === "SL" || kind === "OI");
+    var src = fromRev ? c.revenueAccounts : c.expenses;
     (src || []).forEach(function (a) {
-      if (a.type !== kind) return;
+      if (pnlLineOf(a, fromRev) !== kind) return;
       var k = a.acc + "|" + a.name;
       var e = byAcc[k] || (byAcc[k] = { acc: a.acc, name: a.name, v: months.map(function () { return 0; }) });
       months.forEach(function (m, i) { e.v[i] += (a.m || {})[m] || 0; });
@@ -2383,7 +2412,11 @@ function vrgfpDetail(list, months, lineId, ym) {
     '<th class="num">' + bi("Entries", "笔数") + '</th>' +
     '<th class="num">' + bi("Amount", "金额") + '</th>' +
     '<th class="num">' + bi("Share", "占比") + '</th></tr></thead><tbody>' +
-    accs.slice(0, 60).map(function (a2) {
+    // No cap. Showing 60 rows under a total computed from all of them made the
+    // column stop short of its own footer with nothing to say why - the reader
+    // sees a total they cannot add up. The P&L panel lists every account for the
+    // same reason; the table scrolls.
+    accs.map(function (a2) {
       return '<tr class="drill" data-figacc="' + esc(a2.acc) + '">' +
         '<td class="first"><span class="mono">' + esc(a2.co) + '</span> ' +
         '<span class="nm">' + esc(a2.name) + '</span><span class="sub2">' + esc(a2.acc) +
@@ -2840,7 +2873,10 @@ document.getElementById("view").addEventListener("click", function (e) {
   // Level 1 -> level 2: open one account's documents.
   var dr = e.target.closest("tr.drill");
   if (dr && openFig) {
-    openFig = { line: openFig.line, acc: dr.dataset.figacc, ym: openFig.ym };
+    // Change only the account. Rebuilding the object from named fields silently
+    // dropped the cmp flag, so drilling from a comparison figure landed on this
+    // period's documents while the header still claimed the comparison one.
+    openFig.acc = dr.dataset.figacc;
     render();
     return;
   }
@@ -2856,7 +2892,7 @@ document.getElementById("view").addEventListener("click", function (e) {
   if (e.target.closest("[data-custall]")) { custAll = !custAll; render(); return; }
   // Level 2 -> level 1.
   if (e.target.closest("[data-figback]") && openFig) {
-    openFig = { line: openFig.line, acc: "", ym: openFig.ym };
+    openFig.acc = "";
     render();
     return;
   }
