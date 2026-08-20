@@ -83,8 +83,13 @@ if (ok) pass("controls, rail and view all rendered");
 
 const topics = (sinks.rail.match(/data-topic="([a-z]+)"/g) || [])
   .map((s) => s.replace(/.*"(.*)"/, "$1"));
-if (topics.length !== 12) fail("expected 12 topics, got " + topics.length);
-else pass("rail lists 12 topics: " + topics.join(", "));
+// Derived from TOPICS rather than hard-coded: adding or removing a topic is a
+// product decision, not a reason for the suite to fail.
+const declared = ctx.TOPICS ? ctx.TOPICS.length : 0;
+if (!declared) fail("TOPICS not reachable - cannot verify the rail");
+else if (topics.length !== declared)
+  fail("rail shows " + topics.length + " topics but TOPICS declares " + declared);
+else pass("rail lists " + topics.length + " topics: " + topics.join(", "));
 
 // Every topic must render, and each ledger topic must produce table rows.
 const run = (js) => vm.runInContext(js, ctx, { timeout: 60000 });
@@ -402,6 +407,34 @@ try {
   }
   run('openFig = null; render();');
 } catch (e) { fail("成本结构 threw: " + e.message); }
+
+// Every topic carries its own computed read, and that read has to say something
+// about THESE books.
+try {
+  const ids = ["overview", "pnl", "cash", "ar", "ap", "cust", "vrgfp", "product",
+               "lines", "liab", "alerts"];
+  const heads = {}, numberless = [], missing = [];
+  ids.forEach((t) => {
+    run('openParty = null; openFig = null; topic = "' + t + '"; render();');
+    const m = (sinks.view || "").match(/<section class="aisug">[\s\S]*?<\/section>/);
+    if (!m) { missing.push(t); return; }
+    const h = (m[0].match(/<h4>([^<]*)<\/h4>/) || [])[1] || "";
+    heads[t] = h;
+    // A line with no figure in it would be true of any company - that is the
+    // failure mode this exists to catch, not a crash.
+    if (!/\d/.test(m[0].replace(/<[^>]*>/g, ""))) numberless.push(t);
+  });
+  if (missing.length) fail("这些页没有 AI 建议：" + missing.join(", "));
+  else pass("每一页都有 AI 建议（" + ids.length + " 页）");
+
+  if (numberless.length) fail("这些页的建议里没有任何数字，等于空话：" + numberless.join(", "));
+  else pass("每则建议都带这家公司的实际数字");
+
+  // If the wiring breaks, every page shows whichever insight rendered first.
+  const distinct = new Set(Object.values(heads)).size;
+  if (distinct < 5) fail("各页建议几乎相同（只有 " + distinct + " 种），可能没有跟着 topic 走");
+  else pass("各页建议互不相同：" + distinct + " 种标题");
+} catch (e) { fail("AI 建议 threw: " + e.message); }
 
 // Receivables / Payables: one row per counterparty first, its documents second.
 ["ar", "ap"].forEach((kind) => {

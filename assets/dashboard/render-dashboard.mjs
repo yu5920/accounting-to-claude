@@ -222,6 +222,16 @@ main{min-width:0}
 .vhead{margin-bottom:14px}
 .vhead h2{font-size:19px;letter-spacing:-.01em}
 /* Chinese title sits beside the English one, quieter and smaller. */
+.aisug{display:flex;gap:11px;align-items:flex-start;background:var(--surface-2);
+  border:1px solid var(--rule);border-left:3px solid var(--accent);border-radius:9px;
+  padding:11px 14px;margin:0 0 14px}
+.aitag{flex:none;font-size:10px;font-weight:700;letter-spacing:.08em;color:var(--on-accent);
+  background:var(--accent);border-radius:4px;padding:2px 6px;margin-top:1px}
+.aibody{min-width:0}
+.aibody h4{margin:0 0 4px;font-size:13.5px;letter-spacing:-.01em}
+.aibody ul{margin:0;padding-left:16px}
+.aibody li{font-size:12px;color:var(--ink-2);line-height:1.55;margin:1px 0}
+.rulezh{opacity:.75;font-size:11px}
 .h3zh{margin-left:7px;font-size:12px;font-weight:500;color:var(--ink-3)}
 .h2zh{margin-left:9px;font-size:13px;font-weight:500;color:var(--ink-3);letter-spacing:0}
 .vhead p{margin:3px 0 0;color:var(--ink-3);font-size:13px;max-width:76ch}
@@ -445,7 +455,7 @@ th .bi i{font-size:10px}
     <div class="stamp">资料截至 ${genStr}<br>${parsed.months[0]} → ${parsed.months[parsed.months.length - 1]} · ${txnCount.toLocaleString()} 笔分录</div>
   </div>
 </div></div>
-<div class="rulebar"><div class="rulein">负数以括号显示 · 标示「当下」的区块不随期间变动 · 成本无法拆到服务线，损益只到公司层级</div></div>
+<div class="rulebar"><div class="rulein">Negatives in brackets &middot; blocks marked &ldquo;as at today&rdquo; ignore the period filter<br><span class="rulezh">负数以括号显示 · 标示「当下」的区块不随期间变动</span></div></div>
 
 <div class="shell">
 <div class="top">
@@ -1166,6 +1176,171 @@ function kpi(label, value, cls, sub, srcKey, cmpVal) {
     '<div class="sub">' + esc(sub) + '</div>' + c + '</div>';
 }
 
+// A short, computed read on whatever page you are looking at.
+//
+// Every line has to carry a number from these books. The moment this starts
+// producing sentences that would be true of any company - "monitor your
+// receivables closely" - it has become decoration, and decoration on a finance
+// page is worse than a blank space because it looks like analysis. When there
+// is nothing worth saying, it says that instead.
+function topicInsight(topic, list, months) {
+  var out = [], head = null;
+  var money = function (n) { return "RM " + rm(n); };
+  var s = pnlSeries(list, months);
+  var tot = function (a) { return a.reduce(function (x, y) { return x + y; }, 0); };
+
+  if (topic === "overview" || topic === "pnl") {
+    var rev = tot(s.rev), np = tot(s.np);
+    head = np >= 0 ? "Profitable over the selected period" : "Loss-making over the selected period";
+    out.push("Revenue " + money(rev) + " · net " + money(np) +
+      (rev ? " (" + ((np / rev) * 100).toFixed(1) + "%)" : "") +
+      " 营收与净利");
+    // Which month hurt most, and by how much - a number someone can go look at.
+    var worst = null;
+    s.np.forEach(function (v, i) { if (worst === null || v < s.np[worst]) worst = i; });
+    if (worst !== null && s.np[worst] < 0)
+      out.push("Worst month " + months[worst] + " at " + money(s.np[worst]) +
+        " — open it before reading the trend 最差的月份，先看它再谈趋势");
+    // The single biggest expense account is usually the whole conversation.
+    var ex = [];
+    list.forEach(function (c) { (c.expenses || []).forEach(function (a) {
+      var v = overM(a.m, months); if (v) ex.push({ n: a.name, v: v }); }); });
+    ex.sort(function (a, b) { return b.v - a.v; });
+    if (ex.length) out.push("Largest single cost: " + ex[0].n + " " + money(ex[0].v) +
+      (rev ? " = " + ((ex[0].v / rev) * 100).toFixed(0) + "% of revenue" : "") + " 最大单笔成本");
+  } else if (topic === "cash") {
+    var inflow = 0, outflow = 0;
+    list.forEach(function (c) { cfOf(c, months).forEach(function (r) {
+      inflow += r.in; outflow += r.out; }); });
+    head = inflow >= outflow ? "Cash went up over the period" : "Cash went down over the period";
+    out.push("In " + money(inflow) + " · out " + money(outflow) + " · net " +
+      money(inflow - outflow) + " 期间进出与净额");
+    var cash = sum(list, function (c) { return c.cash || 0; });
+    if (cash) out.push("Balance " + money(cash) +
+      " — accumulated from postings, not read from the vendor; check it against a trial balance " +
+      "余额是累加出来的，要对试算表");
+  } else if (topic === "ar" || topic === "ap") {
+    var isAr = topic === "ar";
+    var docs = openDocsOf(list, isAr ? "arDocs" : "apDocs");
+    var parties = partyOutstanding(docs);
+    var t = sum(parties, function (r) { return r.outs; });
+    if (!parties.length) {
+      // An empty side still gets a countable fact. "Nothing outstanding" on its
+      // own is indistinguishable from a page that failed to load.
+      var seen = 0;
+      list.forEach(function (c) { seen += ((isAr ? c.arDocs : c.apDocs) || []).length; });
+      head = isAr ? "Nothing outstanding to collect" : "Nothing outstanding to pay";
+      out.push(seen + (isAr ? " sales documents 张销售单据" : " purchase documents 张采购单据") +
+        " in the book, all settled 全部已结清");
+      if (!isAr) out.push("Cost is recorded on payments rather than supplier invoices, so " +
+        "there is no payables position to show 成本直接记在付款单上，所以没有应付部位");
+    } else {
+      var late = parties.filter(function (r) { return r.late > 0; });
+      var lateAmt = sum(late, function (r) { return r.outs; });
+      head = lateAmt > 0 ? "Overdue money is concentrated" : "Outstanding, none of it overdue yet";
+      out.push(money(t) + " across " + parties.length +
+        (isAr ? " customer(s) 客户" : " supplier(s) 供应商") +
+        (lateAmt ? "，" + money(lateAmt) + " already overdue 已逾期" : ""));
+      if (parties[0]) out.push("Largest: " + parties[0].name + " " + money(parties[0].outs) +
+        (parties[0].late > 0 ? "，" + parties[0].late + " days past due 天逾期" : "") +
+        (t ? "（" + ((parties[0].outs / t) * 100).toFixed(0) + "% of the total）" : ""));
+      out.push("This table ignores the period filter — outstanding is a position as at today " +
+        "此表不受期间影响，未清是当下的位置");
+    }
+  } else if (topic === "cust") {
+    var rows = [];
+    list.forEach(function (c) { (c.customers || []).forEach(function (a) {
+      var v = overM(a.m, months); if (v > 0) rows.push({ n: a.name, v: v }); }); });
+    rows.sort(function (a, b) { return b.v - a.v; });
+    var gt = sum(rows, function (r) { return r.v; });
+    if (!rows.length) { head = "No billing in this period"; out.push("期间内没有开单记录。"); }
+    else {
+      var share = rows[0].v / gt;
+      head = share > 0.5 ? "One customer carries the period"
+           : share > 0.25 ? "Billing leans on a few names" : "Billing is well spread";
+      out.push(rows.length + " customers billed " + money(gt) + " 期间开单");
+      out.push("Largest: " + rows[0].n + " " + money(rows[0].v) + "（" +
+        (share * 100).toFixed(0) + "%）· top 3 = " +
+        ((sum(rows.slice(0, 3), function (r) { return r.v; }) / gt) * 100).toFixed(0) + "%");
+      if (rows.length > 15) out.push("Only the top 15 are listed; the rest are folded into one " +
+        "row you can open 其余折在 Others 一列，可点开");
+    }
+  } else if (topic === "product") {
+    var mapped = 0;
+    list.forEach(function (c) {
+      if ((PMAP.companies || {})[c.short]) mapped++; });
+    if (!mapped) {
+      head = "Product margin is not set up yet";
+      out.push("This page stays blank until accounts are mapped to product lines — " +
+        "an empty page is the honest default 尚未设定产品对照，页面刻意留白");
+    } else {
+      var d = projectRows(list[0], months);
+      head = d && d.direct >= 0.5 ? "Most cost is directly attributed"
+                                  : "Most cost is still shared";
+      if (d) {
+        out.push("Directly attributed " + (d.direct * 100).toFixed(1) +
+          "% of cost 直接归属比例");
+        out.push("That percentage is the ceiling on how much the margin differences " +
+          "between lines can be trusted 这个比例就是线间毛利差异的可信度上限");
+      }
+    }
+  } else if (topic === "vrgfp") {
+    var g = vrgfpSeries(list, months);
+    var R = tot(g.R), V = tot(g.V), F = tot(g.F);
+    var be = (1 - (R ? V / R : 0)) ? F / (1 - (R ? V / R : 0)) : null;
+    head = be !== null && R >= be ? "Above break-even" : "Below break-even";
+    if (be !== null) {
+      out.push("Break-even revenue " + money(be) + " vs actual " + money(R) + " 损益两平点");
+      out.push("Margin of safety " + (R ? (((R - be) / R) * 100).toFixed(0) : "—") +
+        "% 安全边际");
+    }
+    out.push("Variable vs fixed comes from cost-rules.json keyword rules — a wrong rule moves " +
+      "this whole page 变动/固定分类来自关键字规则，规则错了整页都会错");
+  } else if (topic === "liab") {
+    var def = [];
+    list.forEach(function (c) { (c.liabilities || []).forEach(function (l) {
+      if (l.isDeferred) def.push(l); }); });
+    var dt = sum(def, function (l) { return l.bal; });
+    if (dt) {
+      head = "Money received, service not yet delivered";
+      out.push(money(dt) + " sitting in deferred/deposit accounts — cash already collected, " +
+        "revenue not yet earned 已收未交付");
+      out.push("This is the closest thing here to locked-in future revenue 最接近「已锁定未来收入」的数字");
+    } else { head = "No deferred balance"; out.push("没有预收性质的负债余额。"); }
+  } else if (topic === "lines") {
+    var ls = [];
+    list.forEach(function (c) { (c.serviceLines || []).forEach(function (a) {
+      var v = overM(a.m, months); if (v) ls.push({ n: a.name, v: v, d: a.deferred }); }); });
+    ls.sort(function (a, b) { return b.v - a.v; });
+    var lt = sum(ls, function (r) { return r.v; });
+    if (ls.length) {
+      head = "Revenue mix by the account each invoice line was coded to";
+      out.push(ls[0].n + " leads at " + money(ls[0].v) +
+        (lt ? "（" + ((ls[0].v / lt) * 100).toFixed(0) + "%）" : ""));
+      var defl = ls.filter(function (r) { return r.d; });
+      if (defl.length) out.push(defl.length + " line(s) are coded to liability accounts totalling " +
+        money(sum(defl, function (r) { return r.v; })) +
+        " — billed but not revenue 开在负债科目，不算营收");
+      out.push("Cost cannot be split to service lines, so this is revenue only 成本拆不到服务线，这里只有收入");
+    } else { head = "No billing lines in this period"; out.push("期间内没有开单明细。"); }
+  } else if (topic === "alerts") {
+    var al = buildAlerts(list, months);
+    var n = al.collect.length + al.cash.length + al.trend.length + al.conc.length;
+    head = n ? n + " item(s) need a look" : "Nothing flagged";
+    if (!n) out.push("No overdue concentration, negative bank balance or worsening trend " +
+      "was detected in this period 期间内没有侦测到问题");
+    var lim = [];
+    list.forEach(function (c) { (c.limitations || []).forEach(function (l) { lim.push(l); }); });
+    lim.forEach(function (l) { out.push(l); });
+  }
+
+  if (!head) return "";
+  return '<section class="aisug"><span class="aitag">AI</span><div class="aibody">' +
+    '<h4>' + esc(head) + '</h4><ul>' +
+    out.map(function (t) { return '<li>' + esc(t) + '</li>'; }).join("") +
+    '</ul></div></section>';
+}
+
 function buildAlerts(list, months) {
   var a = { collect: [], cash: [], trend: [], conc: [] };
   list.forEach(function (c) {
@@ -1241,7 +1416,6 @@ var TOPICS = [
   { id: "lines",    label: "服务线",    en: "Service Lines" },
   { id: "liab",     label: "负债与递延", en: "Liabilities" },
   { id: "alerts",   label: "风险预警",  en: "Alerts" },
-  { id: "source",   label: "资料来源",  en: "Data Source" },
 ];
 
 // English first, Chinese underneath. Pass zh empty for terms that are already
@@ -2364,49 +2538,6 @@ function viewProduct(list, months) {
     (blocks || '<p class="empty">选中的公司没有可分析的营业收入。</p>');
 }
 
-function viewSource() {
-  var METRICS = [
-    ["已确认收入", "Σ (HomeCR − HomeDR)，AccType IN ('SL','OI')", "GLDTL · GLMast"],
-    ["支出", "Σ (HomeDR − HomeCR)，AccType IN ('EP','CO')", "GLDTL · GLMast"],
-    ["净利", "已确认收入 − 支出（只到公司层级）", "GLDTL · GLMast"],
-    ["开单额", "Σ ARInvoice.LocalNetTotal，Cancelled='F'", "ARInvoice"],
-    ["现金余额", "Σ (HomeDR − HomeCR)，SpecialAccType IN ('SBK','SCH')", "GLDTL · GLMast"],
-    ["现金流入 / 流出", "Σ HomeDR / Σ HomeCR 于银行科目，依 DEAccNo 分组", "GLDTL · GLMast"],
-    ["递延收入", "Σ (HomeCR − HomeDR)，AccType='CL' 且名称含关键字", "GLDTL · GLMast"],
-    ["未收应收", "Σ ARInvoice.Outstanding，Cancelled='F'", "ARInvoice"],
-    ["DSO", "未收应收 ÷ (期间收入 ÷ 期间天数)", "ARInvoice · GLDTL"],
-    ["Runway", "现金 ÷ 每月净烧（(支出−收入)÷月数）", "GLDTL · GLMast"],
-    ["集中度", "最大客户开单额 ÷ 期间总开单额", "ARInvoice · Debtor"],
-  ];
-  var NOTES = [
-    "「当下」标记的区块不随期间变动。应收应付账龄、银行余额、递延收入余额都是此刻的位置，不是期间流量。",
-    "成本无法拆到服务线。ProjNo、DeptNo 全集团没有使用，费用只挂在科目上。要改变这点，得从今天起开单与入账时填 ProjNo；旧资料补不回来。",
-    "最后一个月未过完，判断趋势时请忽略，或把结束月往前调一个月。",
-    "集团合计未冲销关联交易。集团内部互相开单在合计里重复计算，客户页有标示「疑似关联」。",
-    "户口间调拨预设排除。若对方科目本身也是银行或现金科目，那笔只是自家户口搬钱，会同时灌大流入与流出。",
-    "递延收入以科目名称关键字辨识（UNRECOGNISED / UNEARNED / DEFERRED / DEPOSIT / ADVANCE），属推测分类，请核对。",
-    "作废单据已排除（Cancelled='T'）。AutoCount 的作废单仍保留金额，不排除会虚增应收。",
-    "账龄以到期日计算，不是开单日。",
-  ];
-  return vhead("Data Source", "资料来源", "每个数字的算法、来源表与筛选条件。各页 KPI 卡右上角的 ⓘ 会列出组成明细。") +
-    '<section class="card"><h3>指标算法</h3><div class="tscroll"><table class="dtab"><thead><tr>' +
-    '<th class="first">' + bi("Metric", "指标") + '</th><th>' + bi("Formula", "公式") + '</th><th>' + bi("Source table", "来源表") + '</th></tr></thead><tbody>' +
-    METRICS.map(function (r) {
-      return '<tr><td class="first nm">' + esc(r[0]) + '</td><td class="mono" style="font-size:11.5px">' +
-        esc(r[1]) + '</td><td class="mono" style="font-size:11.5px">' + esc(r[2]) + '</td></tr>';
-    }).join("") + '</tbody></table></div></section>' +
-    '<section class="card"><h3>口径与限制</h3><div class="notes" style="margin-top:8px"><ul>' +
-    NOTES.map(function (n) { return "<li>" + esc(n) + "</li>"; }).join("") +
-    '<li>资料范围：' + esc(ALLM[0]) + " 至 " + esc(ALLM[ALLM.length - 1]) + "，共 " + ALLM.length +
-    ' 个月，' + D.companies.reduce(function (s, c) { return s + ((c.txns || []).length); }, 0)
-      .toLocaleString() + ' 笔分录。</li></ul></div></section>' +
-    '<section class="card"><h3>想追问什么</h3>' +
-    '<p class="hint">这一页是快照。点一下复制问题，贴到这台电脑的 Claude 里，它会现场去查最新资料，' +
-    '而且能查到 2019 年。</p><div class="qlist">' + QUESTIONS.map(function (q) {
-      return '<button class="q" type="button" data-q="' + esc(q) + '"><span class="qi">?</span>' +
-        '<span class="qt">' + esc(q) + '</span></button>'; }).join("") + '</div></section>';
-}
-
 function renderControls() {
   document.getElementById("cFilters").innerHTML = '<span class="clab">' + bi("Company", "公司") + '</span>' +
     LIVE.map(function (c) {
@@ -2477,19 +2608,32 @@ function render() {
   renderRail(list, months);
   var v = document.getElementById("view");
   if (!list.length) { v.innerHTML = vhead("No company selected", "没有选中公司", "在上方挑一间公司来看。"); return; }
-  if (topic === "overview") v.innerHTML = viewOverview(list, months, cm);
-  else if (topic === "pnl") v.innerHTML = viewPnl(list, months, cm);
-  else if (topic === "cash") v.innerHTML = viewCash(list, months);
-  else if (topic === "ar") v.innerHTML = viewAr(list, months);
-  else if (topic === "ap") v.innerHTML = viewAp(list, months);
-  else if (topic === "vrgfp") v.innerHTML = viewVrgfp(list, months, cm);
-  else if (topic === "product") v.innerHTML = viewProduct(list, months);
-  else if (topic === "cust") v.innerHTML = viewCust(list, months, cm);
-  else if (topic === "lines") v.innerHTML = viewLines(list, months, cm);
-  else if (topic === "liab") v.innerHTML = viewLiab(list, months);
-  else if (topic === "alerts") v.innerHTML = viewAlerts(list, months);
-  else if (topic === "review") v.innerHTML = viewReview(list, months, cm);
-  else v.innerHTML = viewSource();
+  var html;
+  if (topic === "overview") html = viewOverview(list, months, cm);
+  else if (topic === "pnl") html = viewPnl(list, months, cm);
+  else if (topic === "cash") html = viewCash(list, months);
+  else if (topic === "ar") html = viewAr(list, months);
+  else if (topic === "ap") html = viewAp(list, months);
+  else if (topic === "vrgfp") html = viewVrgfp(list, months, cm);
+  else if (topic === "product") html = viewProduct(list, months);
+  else if (topic === "cust") html = viewCust(list, months, cm);
+  else if (topic === "lines") html = viewLines(list, months, cm);
+  else if (topic === "liab") html = viewLiab(list, months);
+  else if (topic === "alerts") html = viewAlerts(list, months);
+  else if (topic === "review") html = viewReview(list, months, cm);
+  else html = viewAlerts(list, months);
+
+  // The read on this page goes directly under its heading, above the tables.
+  // The AI Review page is excluded: it is already nothing but commentary, and a
+  // summary of a summary is noise.
+  if (topic !== "review") {
+    var ins = topicInsight(topic, list, months);
+    if (ins) {
+      var at = html.indexOf("</p></div>");
+      html = at >= 0 ? html.slice(0, at + 10) + ins + html.slice(at + 10) : ins + html;
+    }
+  }
+  v.innerHTML = html;
   if (openSrc) {
     var b = document.querySelector('.src[data-src="' + openSrc + '"]');
     var k = openSrc; openSrc = null;
