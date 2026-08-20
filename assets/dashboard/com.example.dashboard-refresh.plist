@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.example.dashboard-refresh</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/PATH/TO/dashboard/daily-refresh.sh</string>
+  </array>
+
+  <!-- 08:00 daily. launchd runs a missed calendar job once when the Mac next
+       wakes, which is the catch-up behaviour we want after the machine was off. -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key><integer>8</integer>
+    <key>Minute</key><integer>0</integer>
+  </dict>
+
+  <!-- Deliberately false: the missed-job catch-up above already covers a Mac
+       that was off. RunAtLoad would additionally fire on every single login. -->
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>StandardOutPath</key>
+  <string>/PATH/TO/dashboard/launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/PATH/TO/dashboard/launchd.err.log</string>
+</dict>
+</plist>

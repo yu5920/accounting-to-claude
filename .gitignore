@@ -19,3 +19,28 @@ site-credentials.bat
 
 # Packaged skill
 *.skill
+
+# Cached API responses - live ledger data, and large. Outputs, not source.
+cloud-cache/
+
+# Cross-check sheet generated from live books.
+reconciliation.md
+
+# launchd logs from the scheduled refresh.
+launchd.out.log
+launchd.err.log
+dashboard.prev.html
+
+# Per-install settings: names the company and its books.
+profile.json
+
+# Per-install cost/project mapping: names product lines and business decisions.
+# Commit project-map.example.json instead.
+project-map.json
+
+# Generated scheduler config: contains machine paths and the company name.
+com.*.dashboard-refresh.plist
+!com.example.dashboard-refresh.plist
+
+# macOS noise
+.DS_Store
