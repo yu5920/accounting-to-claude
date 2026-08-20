@@ -231,6 +231,9 @@ main{min-width:0}
 .aibody h4{margin:0 0 4px;font-size:13.5px;letter-spacing:-.01em}
 .aibody ul{margin:0;padding-left:16px}
 .aibody li{font-size:12px;color:var(--ink-2);line-height:1.55;margin:1px 0}
+.delta.na{color:var(--ink-3);font-style:italic}
+.dtab.pnl td.cmpcol{color:var(--ink-3)}
+.dtab.pnl th.cmpcol{color:var(--ink-3)}
 .rulezh{opacity:.75;font-size:11px}
 .h3zh{margin-left:7px;font-size:12px;font-weight:500;color:var(--ink-3)}
 .h2zh{margin-left:9px;font-size:13px;font-weight:500;color:var(--ink-3);letter-spacing:0}
@@ -1577,37 +1580,82 @@ function pnlAccounts(list, months, kind) {
 
 // The statement: lines down, months across, totals at the right.
 // Every figure carries the coordinates needed to open its own detail panel.
-function pnlStatement(list, months, title, level) {
+function pnlStatement(list, months, title, level, cm) {
   var s = pnlSeries(list, months);
+  // With a comparison on, twelve monthly columns and a total is not what anyone
+  // is reading - they are reading one number against last year's. So the months
+  // give way to period total vs comparison vs change.
+  var cs = cm ? pnlSeries(list, cm) : null;
   var tot = function (a) { return a.reduce(function (x, y) { return x + y; }, 0); };
   var ratio = function (num, den, i) { return den[i] ? num[i] / den[i] : null; };
 
   // Labels come from LINE_META so the statement, the detail panel and the
   // drill-down headings can never drift apart.
   var LINES = [
-    { id: "SL", v: s.sl, kind: "SL" },
-    { id: "OI", v: s.oi, kind: "OI" },
-    { id: "REV", v: s.rev, strong: true },
-    { id: "CO", v: s.co, negate: true, kind: "CO" },
-    { id: "GP", v: s.gp, strong: true },
+    { id: "SL", v: s.sl, vKey: "sl", kind: "SL" },
+    { id: "OI", v: s.oi, vKey: "oi", kind: "OI" },
+    { id: "REV", v: s.rev, vKey: "rev", strong: true },
+    { id: "CO", v: s.co, vKey: "co", negate: true, kind: "CO" },
+    { id: "GP", v: s.gp, vKey: "gp", strong: true },
     { id: "GPR", ratioOf: ["gp", "rev"] },
-    { id: "EP", v: s.ep, negate: true, kind: "EP" },
-    { id: "NP", v: s.np, strong: true },
+    { id: "EP", v: s.ep, vKey: "ep", negate: true, kind: "EP" },
+    { id: "NP", v: s.np, vKey: "np", strong: true },
     { id: "NPR", ratioOf: ["np", "rev"] },
   ];
 
-  var head = '<tr><th class="first">' + esc(title) + '</th>' +
-    months.map(function (m) {
-      return '<th class="num' + (m === LASTFULL ? " cur" : "") + '">' + esc(mlab(m)) +
-        (m === ALLM[ALLM.length - 1] ? " ·" : "") + '</th>'; }).join("") +
-    '<th class="num tcol">' + bi("Total", "合计") + '</th></tr>';
+  var head = cs
+    ? '<tr><th class="first">' + esc(title) + '</th>' +
+      '<th class="num tcol">' + bi("This period", "本期") + '</th>' +
+      '<th class="num">' + bi(cmpLabel() === "去年同期" ? "Same period last year" : "Previous period",
+                              cmpLabel()) + '</th>' +
+      '<th class="num">' + bi("Change", "变化") + '</th>' +
+      '<th class="num">' + bi("Change %", "变化率（按绝对值）") + '</th></tr>'
+    : '<tr><th class="first">' + esc(title) + '</th>' +
+      months.map(function (m) {
+        return '<th class="num' + (m === LASTFULL ? " cur" : "") + '">' + esc(mlab(m)) +
+          (m === ALLM[ALLM.length - 1] ? " ·" : "") + '</th>'; }).join("") +
+      '<th class="num tcol">' + bi("Total", "合计") + '</th></tr>';
+
+  // One row's worth of comparison columns. The comparison figure stays clickable
+  // - a number nobody can trace is a number nobody can argue with.
+  var cmpCells = function (cur, prev, lineId, acc, isPct) {
+    var diff = (cur || 0) - (prev || 0);
+
+    // Percent change is only meaningful when the base is positive and both
+    // periods sit on the same side of zero. Going from a loss of 100k to a
+    // profit of 225k is not "+325%" - that figure is arithmetic noise, and a
+    // boss reading it as growth would be reading something that does not exist.
+    // Ratios get percentage points instead; a percent change of a percentage is
+    // its own kind of nonsense.
+    var pctCell;
+    if (isPct) {
+      pctCell = '<span class="delta">—</span>';
+    } else if (!prev || prev === null || (cur < 0) !== (prev < 0)) {
+      pctCell = '<span class="delta na" title="Base is zero, negative, or the sign flipped">n/a</span>';
+    } else {
+      // Measured on magnitude, so a cost that grew reads as growth even though
+      // it is displayed as a negative. Direction of the bar, not of the sign.
+      var d = ((Math.abs(cur) - Math.abs(prev)) / Math.abs(prev)) * 100;
+      pctCell = '<span class="delta ' + (d >= 0 ? "up" : "down") + '">' +
+        (d >= 0 ? "+" : "") + d.toFixed(0) + '%</span>';
+    }
+
+    return cell(isPct ? pct1(cur) : acct(cur), lineId, acc, "", " tcol") +
+      cell(isPct ? pct1(prev) : acct(prev), lineId, acc, "", " cmpcol", true) +
+      '<td class="num">' + (isPct
+        ? (cur === null || prev === null ? "—"
+           : ((cur - prev) * 100 >= 0 ? "+" : "") + ((cur - prev) * 100).toFixed(1) + " pp")
+        : acct(diff)) + '</td>' +
+      '<td class="num">' + pctCell + '</td>';
+  };
 
   // A clickable figure. line/acc/month identify what to show in the panel.
-  var cell = function (txt, lineId, acc, ym, extra) {
+  var cell = function (txt, lineId, acc, ym, extra, isCmp) {
     var on = openFig && openFig.line === lineId && openFig.acc === (acc || "") &&
-             openFig.ym === (ym || "");
+             openFig.ym === (ym || "") && Boolean(openFig.cmp) === Boolean(isCmp);
     return '<td class="num fig' + (extra || "") + (on ? " figon" : "") + '" data-line="' + lineId +
-      '" data-acc="' + esc(acc || "") + '" data-ym="' + esc(ym || "") + '">' + txt + '</td>';
+      '" data-acc="' + esc(acc || "") + '" data-ym="' + esc(ym || "") + '"' +
+      (isCmp ? ' data-cmp="1"' : "") + '>' + txt + '</td>';
   };
 
   var body = "";
@@ -1616,25 +1664,40 @@ function pnlStatement(list, months, title, level) {
       var num = s[L.ratioOf[0]], den = s[L.ratioOf[1]];
       body += '<tr class="ratio" data-row="' + L.id + '"><td class="first">' +
         bi(LINE_META[L.id].en, LINE_META[L.id].zh) + '</td>' +
-        months.map(function (m, i) {
-          return cell(pct1(ratio(num, den, i)), L.id, "", m); }).join("") +
-        cell(pct1(tot(den) ? tot(num) / tot(den) : null), L.id, "", "", " tcol") + '</tr>';
+        (cs
+          ? cmpCells(tot(den) ? tot(num) / tot(den) : null,
+                     tot(cs[L.ratioOf[1]]) ? tot(cs[L.ratioOf[0]]) / tot(cs[L.ratioOf[1]]) : null,
+                     L.id, "", true)
+          : months.map(function (m, i) {
+              return cell(pct1(ratio(num, den, i)), L.id, "", m); }).join("") +
+            cell(pct1(tot(den) ? tot(num) / tot(den) : null), L.id, "", "", " tcol")) + '</tr>';
       return;
     }
     var vals = L.negate ? L.v.map(function (x) { return -x; }) : L.v;
     body += '<tr' + (L.strong ? ' class="sub"' : "") + ' data-row="' + L.id +
       '"><td class="first">' + bi(LINE_META[L.id].en, LINE_META[L.id].zh) + '</td>' +
-      vals.map(function (x, i) { return cell(acct(x), L.id, "", months[i]); }).join("") +
-      cell(acct(tot(vals)), L.id, "", "", " tcol") + '</tr>';
+      (cs
+        ? (function () {
+            var pv = cs[L.vKey] || [];
+            var pt = tot(pv) * (L.negate ? -1 : 1);
+            return cmpCells(tot(vals), pt, L.id, "", false);
+          })()
+        : vals.map(function (x, i) { return cell(acct(x), L.id, "", months[i]); }).join("") +
+          cell(acct(tot(vals)), L.id, "", "", " tcol")) + '</tr>';
 
     // Level 2 expands each detail line into the accounts that make it up.
     if (level === 2 && L.kind) {
       pnlAccounts(list, months, L.kind).forEach(function (a) {
         var av = L.negate ? a.v.map(function (x) { return -x; }) : a.v;
+        var pAcc = cs ? pnlAccounts(list, cm, L.kind).filter(function (x) {
+          return x.acc === a.acc; })[0] : null;
+        var pTot = pAcc ? tot(pAcc.v) * (L.negate ? -1 : 1) : 0;
         body += '<tr class="lvl2"><td class="first"><span class="l2n">' + esc(a.name) +
           '</span><span class="sub2">' + esc(a.acc) + '</span></td>' +
-          av.map(function (x, i) { return cell(acct(x), L.id, a.acc, months[i]); }).join("") +
-          cell(acct(tot(av)), L.id, a.acc, "", " tcol") + '</tr>';
+          (cs
+            ? cmpCells(tot(av), pTot, L.id, a.acc, false)
+            : av.map(function (x, i) { return cell(acct(x), L.id, a.acc, months[i]); }).join("") +
+              cell(acct(tot(av)), L.id, a.acc, "", " tcol")) + '</tr>';
       });
     }
   });
@@ -1663,8 +1726,13 @@ Object.keys(LINE_META).forEach(function (k) {
 function figureDetail(list, months, lineId, acc, ym) {
   var M = LINE_META[lineId];
   if (!M) return "<p class='empty'>没有这个项目的明细。</p>";
-  var scope = ym ? [ym] : months;
-  var period = ym ? ym : (range.from + " → " + range.to);
+  // A comparison figure drills into the comparison period, not this one.
+  var cmpScope = openFig && openFig.cmp ? cmpMonths() : null;
+  var base = cmpScope || months;
+  var scope = ym ? [ym] : base;
+  var period = ym ? ym
+    : (cmpScope ? cmpLabel() + " " + cmpScope[0] + " → " + cmpScope[cmpScope.length - 1]
+                : range.from + " → " + range.to);
 
   // Ratios and subtotals explain themselves through their components.
   if (M.ratio || M.composed) {
@@ -1800,8 +1868,11 @@ function viewPnl(list, months, cm) {
       return '<button class="pill" type="button" data-lvl="' + l[0] + '" aria-pressed="' +
         (pnlLevel === l[0]) + '">' + esc(l[1]) + '</button>'; }).join("") + '</div></div>' +
     pnlStatement(ent.list, months, ent.id === "__all__" ? "合并 (RM)" : ent.label + " (RM)",
-      pnlLevel) +
-    '<p class="hint" style="margin:10px 0 0">点任一数字 → 展开该数字的组成科目与分录。</p>' +
+      pnlLevel, cm) +
+    '<p class="hint" style="margin:10px 0 0">' +
+      (cm ? 'Comparing period totals; monthly columns are hidden while a comparison is on. ' +
+            '对比期间合计，开着对比时不显示月份。' : "") +
+      'Click any figure to open the accounts behind it. 点任一数字 → 展开该数字的组成科目与分录。</p>' +
     '</section>' +
     (openFig
       ? '<section class="card figpanel" id="figpanel"><div class="lhead">' +
@@ -2753,8 +2824,10 @@ document.getElementById("view").addEventListener("click", function (e) {
   if (lv) { pnlLevel = Number(lv.dataset.lvl); render(); return; }
   var fg = e.target.closest("td.fig");
   if (fg) {
-    var f = { line: fg.dataset.line, acc: fg.dataset.acc, ym: fg.dataset.ym };
-    var same = openFig && openFig.line === f.line && openFig.acc === f.acc && openFig.ym === f.ym;
+    var f = { line: fg.dataset.line, acc: fg.dataset.acc, ym: fg.dataset.ym,
+              cmp: fg.dataset.cmp === "1" };
+    var same = openFig && openFig.line === f.line && openFig.acc === f.acc &&
+               openFig.ym === f.ym && Boolean(openFig.cmp) === f.cmp;
     openFig = same ? null : f;
     render();
     if (openFig) {

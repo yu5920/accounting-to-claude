@@ -408,6 +408,52 @@ try {
   run('openFig = null; render();');
 } catch (e) { fail("成本结构 threw: " + e.message); }
 
+// With a comparison on, the statement drops the monthly columns and compares
+// period totals - and the percentages it prints have to be meaningful ones.
+try {
+  run('topic = "pnl"; applyPreset("6"); cmpMode = "none"; pnlLevel = 1; ' +
+      'openFig = null; renderControls(); render();');
+  const plain = (sinks.view.match(/<th class="num[^"]*"[^>]*>/g) || []).length;
+
+  run('cmpMode = "yoy"; renderControls(); render();');
+  const v = sinks.view;
+  // Scope this to the statement's own header row: the page also carries a
+  // monthly chart, and month labels there are not a defect.
+  const sthead = (v.match(/<table class="dtab pnl">[\s\S]*?<\/thead>/) || [""])[0];
+  if (!/This period/.test(sthead) || !/Change/.test(sthead))
+    fail("对比模式没有换成对比栏位");
+  else if (/\d\d\/\d\d/.test(sthead)) fail("对比模式下损益表仍然显示月份栏");
+  else pass("对比模式：损益表月份栏收起，改为本期／对比期／变化");
+
+  const withCmp = (v.match(/<th class="num[^"]*"[^>]*>/g) || []).length;
+  if (withCmp < plain) pass("对比模式栏位更少（" + plain + " → " + withCmp + "）");
+  else fail("对比模式栏位没有减少：" + plain + " → " + withCmp);
+
+  // Percent change off a negative or zero base is arithmetic noise. Net profit
+  // swung from a loss to a profit in this data, so it must NOT print a number.
+  const npRow = v.split('data-row="NP"')[1].split("</tr>")[0];
+  if (/n\/a/.test(npRow)) pass("正负号翻转时不印百分比，改印 n/a");
+  else fail("从亏损到获利仍然印出了百分比 —— 那个数字没有意义：" +
+            npRow.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 90));
+
+  // A ratio line gets percentage points, never a percent-change-of-a-percent.
+  const gprRow = v.split('data-row="GPR"')[1].split("</tr>")[0];
+  if (/pp/.test(gprRow)) pass("比率列用百分点（pp）表示变化");
+  else fail("比率列没有用 pp");
+
+  // A cost that grew must read as growth even though it displays as a negative.
+  const coRow = v.split('data-row="CO"')[1].split("</tr>")[0];
+  const coPct = (coRow.match(/class="delta (up|down)">([+-][\d.]+)%/) || []);
+  if (coPct[1] === "up") pass("成本上升显示为正向变化（" + coPct[2] + "%）");
+  else fail("成本方向反了：" + (coPct[2] || "未取到"));
+
+  // A comparison figure must drill into the comparison period, not this one.
+  run('openFig = { line: "CO", acc: "", ym: "", cmp: true }; render();');
+  if (/去年同期/.test(sinks.view)) pass("对比栏可下钻，且落在对比期间");
+  else fail("对比栏下钻没有切到对比期间");
+  run('openFig = null; cmpMode = "none"; applyPreset("12"); renderControls(); render();');
+} catch (e) { fail("对比模式 threw: " + e.message); }
+
 // Every topic carries its own computed read, and that read has to say something
 // about THESE books.
 try {
