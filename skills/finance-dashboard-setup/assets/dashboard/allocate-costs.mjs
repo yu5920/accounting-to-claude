@@ -20,11 +20,14 @@
 import { readFileSync, existsSync } from "node:fs";
 
 const need = (f) => { if (!existsSync(f)) { console.error("找不到 " + f); process.exit(2); } };
-need("dashboard-data.json"); need("cost-rules.json"); need("project-map.json");
+need("dashboard-data.json"); need("cost-rules.json");
 
 const data = JSON.parse(readFileSync("dashboard-data.json", "utf8"));
 const rules = JSON.parse(readFileSync("cost-rules.json", "utf8"));
-const pmap = JSON.parse(readFileSync("project-map.json", "utf8"));
+const pmap = JSON.parse(
+  existsSync("project-map.json") ? readFileSync("project-map.json", "utf8")
+  : existsSync("project-map.example.json") ? readFileSync("project-map.example.json", "utf8")
+  : '{"companies":{}}');
 
 const bucketOf = (acc, name, type) => {
   for (const r of rules.rules || []) {
