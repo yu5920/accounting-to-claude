@@ -48,3 +48,6 @@ com.*.dashboard-refresh.plist
 # Sample exports for building the file-based route: real ledger data.
 exports-sample/
 ../exports-sample/
+
+# Remote MCP access tokens: one per person. Never commit.
+server-tokens.txt
