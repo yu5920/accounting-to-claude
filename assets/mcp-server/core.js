@@ -411,6 +411,32 @@ function parseListOutput(out) {
 // Tools
 // ---------------------------------------------------------------------------
 
+// A query may not reach out of the book it was pointed at.
+//
+// assertSafeDatabase guards the `database` ARGUMENT, and the self-test covers
+// that path - but the database name can also arrive inside the SQL itself, as
+// master.sys.tables or otherbook..SomeTable, and that route was unguarded.
+//
+// On a local stdio server that was a small thing: the user already had the
+// machine. Serving these tools over HTTP changes the stakes - a SQL Server
+// holding the accounting books usually holds payroll, or another company's
+// books, right beside them, and a token holder could walk from one to the other
+// without ever naming the other database in the parameter.
+function assertNoCrossDatabase(sql) {
+  const bare = stripComments(String(sql));
+  for (const sysdb of db.systemDatabases) {
+    const name = sysdb.replace(/\.fdb$/i, "");
+    if (new RegExp("(^|[^A-Za-z0-9_])" + name + "\\s*\\.", "i").test(bare)) {
+      throw new Error("Access to the system database " + sysdb + " is not allowed.");
+    }
+  }
+  // db..table - the shorthand that skips the schema and hops databases.
+  if (/[A-Za-z0-9_\]]\s*\.\s*\./.test(bare)) {
+    throw new Error("Cross-database references are not allowed. Query one book at a time.");
+  }
+  return sql;
+}
+
 function assertSafeDatabase(name) {
   if (!name || typeof name !== "string") throw new Error("A database name is required.");
   if (!/^[A-Za-z0-9_ .\-]+$/.test(name)) throw new Error("Invalid database name: " + name);
@@ -530,7 +556,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
       case "query": {
         const d = assertSafeDatabase(args.database);
-        const sql = assertReadOnly(String(args.sql || ""));
+        const sql = assertNoCrossDatabase(assertReadOnly(String(args.sql || "")));
         const cap = Math.min(Number(args.max_rows) || MAX_ROWS, HARD_MAX_ROWS);
         const rows = await db.run(d, sql, cap);
         const note = rows.length >= cap

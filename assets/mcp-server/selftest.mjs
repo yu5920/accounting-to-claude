@@ -92,6 +92,30 @@ for (const [label, sql] of attacks) {
   if (r.isError) pass("blocked: " + label);
   else fail("ALLOWED: " + label, "the guard let this through");
 }
+// The system-database guard has two doors and only one was tested. The database
+// NAME is checked as an argument below; it can also arrive inside the SQL text,
+// which is how someone reads another database on the same server without ever
+// naming it in the parameter. That matters more now these tools can be served
+// over HTTP - payroll and other companies' books usually sit on the same server.
+{
+  const sysdb = engine === "mssql" ? "master" : "security3";
+  const sneaks = [
+    ["system db inside the SQL", "SELECT * FROM " + sysdb + ".sys.tables"],
+    ["cross-database shorthand", "SELECT * FROM otherbook..SomeTable"],
+    ["system db behind a comment", "SELECT * FROM /*x*/ " + sysdb + ".dbo.t"],
+  ];
+  for (const [label, sql] of sneaks) {
+    const r = await call("query", { database: DB, sql });
+    const txt = r.text || "";
+    // A crash is not a block. Without this the suite scores a broken guard as a
+    // working one - which is exactly what happened while writing this fix.
+    if (/is not defined|is not a function|Cannot read/i.test(txt))
+      fail("guard threw instead of refusing: " + label, txt.slice(0, 70));
+    else if (r.isError) pass("blocked: " + label);
+    else fail("ALLOWED: " + label);
+  }
+}
+
 const sysName = engine === "mssql" ? "master" : "security3.fdb";
 const sysTry = await call("query", { database: sysName, sql: "SELECT 1 AS x" });
 if (sysTry.isError) pass("blocked: system database (" + sysName + ")");
