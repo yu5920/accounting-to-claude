@@ -11,9 +11,11 @@
  *
  *   node start-remote.mjs
  *
- * Reads remote-config.json if present (see remote-config.example.json), and
- * environment variables override it. If ACCT_PUBLIC_URL is already set — a named
- * tunnel or your own domain — the tunnel step is skipped entirely.
+ * Configure it with environment variables (ACCT_REMOTE_USERS, ACCT_ENGINE and so
+ * on). If ACCT_PUBLIC_URL is already set — a named tunnel or your own domain —
+ * the tunnel step is skipped entirely.
+ *
+ * You do not need this for a LAN or ZeroTier setup. See references/remote-mcp.md.
  *
  * Stop with Ctrl+C. Both processes go down together, and nothing is reachable
  * from outside afterwards.
@@ -22,46 +24,26 @@
 import { spawn } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const CONFIG_FILE = join(HERE, "remote-config.json");
 
-let config = {};
-if (existsSync(CONFIG_FILE)) {
-  try { config = JSON.parse(readFileSync(CONFIG_FILE, "utf8")); }
-  catch (e) { console.error("remote-config.json is not valid JSON: " + e.message); process.exit(1); }
-}
-
-// Environment wins over the file, so a one-off run can override without editing.
+// Public mode only. Everything comes from the environment; remote.js validates
+// it. Private mode does not need this script at all - there is no tunnel and no
+// ordering problem, so you just run remote.js.
 const env = { ...process.env };
-const fromConfig = {
-  ACCT_ENGINE: config.engine,
-  ACCT_SQL_INSTANCE: config.sqlInstance,
-  ACCT_FB_DIR: config.firebirdDir,
-  ACCT_FB_USER: config.firebirdUser,
-  ACCT_FB_PASSWORD: config.firebirdPassword,
-  ACCT_REMOTE_PORT: config.port,
-  ACCT_PUBLIC_URL: config.publicUrl,
-  ACCT_ALLOW_DATABASES: Array.isArray(config.allowBooks) ? config.allowBooks.join(",") : config.allowBooks,
-  ACCT_ALLOW_CIDR: config.allowCidr,
-  ACCT_REMOTE_USERS: config.users
-    ? Object.entries(config.users).map(([u, p]) => `${u}:${p}`).join(",")
-    : undefined,
-};
-for (const [k, v] of Object.entries(fromConfig)) {
-  if (v !== undefined && v !== null && v !== "" && !env[k]) env[k] = String(v);
-}
 
 const PORT = Number(env.ACCT_REMOTE_PORT) || 8790;
 env.ACCT_REMOTE_PORT = String(PORT);
 
-if (!env.ACCT_REMOTE_USERS) {
+if (!env.ACCT_REMOTE_USERS && !env.ACCT_REMOTE_TOKENS) {
   console.error(`
-  No accounts are configured, so nobody could sign in.
+  Nobody could sign in. Set ACCT_REMOTE_USERS ("name:a-long-passphrase") for the
+  login page, or issue a device token with make-token.mjs.
 
-  Copy remote-config.example.json to remote-config.json and put a username and
-  a long password in it. That file is in .gitignore — keep it that way.
+  If you only need another computer on your LAN or ZeroTier network, you do not
+  want this script at all - run remote.js instead, and read
+  references/remote-mcp.md.
 `);
   process.exit(1);
 }
@@ -83,7 +65,7 @@ function startServer(publicUrl) {
   console.log("\n" + "=".repeat(66));
   console.log("  Paste this into Claude as a custom connector:\n");
   console.log("      " + publicUrl + "/mcp\n");
-  console.log("  Then sign in with the username and password from remote-config.json.");
+  console.log("  Then sign in with the username and password you configured.");
   console.log("=".repeat(66) + "\n");
 
   child = spawn(process.execPath, ["remote.js"], {
@@ -101,7 +83,7 @@ if (env.ACCT_PUBLIC_URL) {
 } else {
   console.log(`Starting a Cloudflare quick tunnel to http://127.0.0.1:${PORT} ...`);
   console.log("(A quick tunnel gets a NEW address every time it starts. For daily use,");
-  console.log(" set up a named tunnel and put its URL in remote-config.json.)\n");
+  console.log(" set up a named tunnel and set ACCT_PUBLIC_URL to its address.)\n");
 
   tunnel = spawn("cloudflared", ["tunnel", "--url", `http://127.0.0.1:${PORT}`], {
     stdio: ["ignore", "pipe", "pipe"],

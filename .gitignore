@@ -19,6 +19,7 @@ site-credentials.bat
 
 # Remote MCP: live credentials, registered OAuth clients, audit trail.
 assets/mcp-server/remote-config.json
+assets/mcp-server/remote-tokens.txt
 assets/mcp-server/remote-state.json
 assets/mcp-server/remote-audit.log
 

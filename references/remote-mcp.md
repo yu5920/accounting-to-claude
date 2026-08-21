@@ -1,170 +1,194 @@
 # Reaching the books from another computer
 
-**Status: verified.** The OAuth flow, the guard and the audit trail are covered
-by `remote-selftest.mjs` — 30 checks, most of them negative.
+**Status: verified.** Both modes are covered by tests —
+`remote-selftest-private.mjs` (14 checks) and `remote-selftest.mjs` (30 checks),
+most of them negative.
 
-The stdio server (`index.js`) is only reachable by Claude running on the same
-machine. `remote.js` serves the *same* server — same guard, same engine layer,
-same four tools, all from `core.js` — over HTTP, so Claude on a laptop, a phone,
-or in a browser can ask questions about the books.
+`index.js` is reachable only by Claude on the machine it runs on. `remote.js`
+serves the *same* server — same guard, same engine layer, same four tools, all
+from `core.js` — over HTTP, so Claude on a laptop somewhere else can ask
+questions about the books.
 
-## Say the trade-off out loud first
+## Pick the mode first, because it changes everything else
 
-Local means the accounts cannot be reached from outside that machine, at all.
-Remote means there is now a door. It has a good lock, and the lock is tested,
-but the honest summary is:
+### Private mode — the one to want
 
-| | Local (`index.js`) | Remote (`remote.js`) |
+No public URL. The server listens on the machine's own addresses and checks a
+**device token** on every request.
+
+Reachable over:
+
+- the office **LAN** (`http://192.168.x.x:8790/mcp`), and
+- a private overlay network like **ZeroTier** or **Tailscale**
+  (`http://10.x.x.x:8790/mcp`), which is how you reach it from *outside* the
+  office without putting anything on the public internet.
+
+That second point is worth sitting with. An overlay network gives the remote
+laptop an address on your private network from anywhere in the world. You get
+external access with no public port, no certificate, no OAuth, and nothing for a
+scanner to find.
+
+### Public mode — only if you need hosted connectors
+
+Set `ACCT_PUBLIC_URL` and the server becomes its own OAuth authorization server:
+discovery documents, dynamic client registration, PKCE S256, a login page,
+one-hour access tokens and rotating refresh tokens.
+
+This exists because **Claude's custom connectors are fetched by Anthropic's
+servers**, from `160.79.104.0/21`. Those servers cannot see a LAN or ZeroTier
+address, so a private URL simply will not work as a custom connector. If you want
+to paste a URL into *Settings → Connectors* and have it just work, it has to be
+publicly resolvable https — which means a tunnel, and a real door on the
+internet.
+
+`bridge.mjs` avoids all of that. Prefer it.
+
+## Who can connect to a private address
+
+| On the other computer | How | Needs |
 |---|---|---|
-| Reachable from the internet | No | Yes, while it is running |
-| Can it change the books | No | No — same guard |
-| Who can read them | Whoever uses that PC | Whoever has a username and password |
-| If a password leaks | Nothing happens | Someone reads the accounts |
-| Machine must be on | Only when used | Whenever anyone wants to ask |
+| **Claude Code** | `claude mcp add --transport http accounting <url> --header "Authorization: Bearer <token>"` | nothing else |
+| **Claude Desktop** | run `bridge.mjs` as a local stdio server | Node + `bridge.mjs` + the token |
+| **claude.ai in a browser** | not possible on a private address | public mode |
 
-Raise this with whoever owns the accounts before switching it on. If the answer
-is "only the boss, only sometimes", start it when needed and stop it after —
-`Ctrl+C` and the door is gone.
+`bridge.mjs` is the trick that makes Claude Desktop work. Desktop's *custom
+connectors* go out through Anthropic, but Desktop also starts *local* stdio
+servers — and a local process can reach a private address perfectly well. So the
+bridge is that local process: it reads JSON-RPC on stdin, forwards it over HTTP
+with the token, and writes the reply back. Nothing but Node and one file is
+needed on that machine — no database client, no accounting credentials.
+
+## Setting up private mode
+
+### 1. Issue a token per device
+
+```bash
+node make-token.mjs "boss laptop"
+```
+
+One token per device, not one shared secret — that is what makes revocation
+possible. Delete the line from `remote-tokens.txt`, restart, and only that
+device loses access. A shared password can only be changed for everybody at
+once, which in practice means it never gets changed.
+
+The audit log records the device name against every query, so name them
+properly.
+
+### 2. Start it
+
+```bash
+node remote.js
+```
+
+It refuses to start with no tokens, prints every address it can be reached on,
+and says which mode it is in.
+
+### 3. Open the port on the Windows firewall
+
+Needed once, in an **administrator** PowerShell — this is why it is a step for
+you rather than something a script does quietly:
+
+```powershell
+New-NetFirewallRule -DisplayName "Accounting MCP" -Direction Inbound -Protocol TCP -LocalPort 8790 -Action Allow -Profile Private
+```
+
+`-Profile Private` matters: it opens the port on networks Windows treats as
+private (home/office) and leaves public Wi‑Fi alone. If the machine's network is
+marked Public, either change that or the rule will not apply.
+
+### 4. Connect from the other computer
+
+**Claude Code:**
+
+```bash
+claude mcp add --transport http accounting http://10.243.39.206:8790/mcp --header "Authorization: Bearer PASTE_TOKEN"
+```
+
+**Claude Desktop:** copy `bridge.mjs` to that machine and add to
+`claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "accounting": {
+      "command": "C:\\Program Files\\nodejs\\node.exe",
+      "args": ["C:\\Tools\\bridge.mjs"],
+      "env": {
+        "ACCT_MCP_URL": "http://10.243.39.206:8790/mcp",
+        "ACCT_MCP_TOKEN": "PASTE_TOKEN"
+      }
+    }
+  }
+}
+```
+
+Then fully quit and reopen Claude — on Windows, closing the window leaves the
+process in the tray and the config is only read at startup.
 
 ## How it is locked
 
-**OAuth 2.0 with Dynamic Client Registration and PKCE.** Claude supports DCR out
-of the box. A fixed bearer token in a request header would be simpler, but
-`static_headers` is still beta and gated, so DCR is the path that works today.
+- **No token, no start.** The server refuses to run with an empty token list,
+  because anyone who could reach the port could otherwise read every posting,
+  balance and customer name.
+- **Tokens are compared in constant time** against every entry, so the work done
+  is the same whether the token exists or not.
+- **The read-only guard is unchanged** — same `core.js` both entry points
+  import. The tests re-check it through the HTTP path anyway, because a guard
+  tested on one route is only guarded on one route.
+- **Every tool call is appended** to `remote-audit.log` with the device name, the
+  IP, the tool and the SQL.
+- **No OAuth surface in private mode.** `/authorize`, `/token`, `/register` and
+  the discovery documents return 404 — an authorization server nobody can reach
+  is a liability, not a feature.
+- **Forwarded-IP headers are ignored** unless `ACCT_TRUST_PROXY` is set. Reachable
+  directly on a network, that header is attacker-controlled.
+- **`allowBooks`** narrows a remote session to specific company books, and
+  **`ACCT_ALLOW_CIDR`** restricts which addresses may connect at all
+  (`192.168.0.0/16`, or your ZeroTier range).
 
-`remote.js` is both the resource server and its own authorization server. It
-serves the discovery documents, registers Claude as a client, shows a login page,
-issues short-lived access tokens (1 hour) and rotating refresh tokens.
-
-- No account exists by default, and passwords under 12 characters are refused at
-  startup — this is on the internet, so a weak one is guessable while you read
-  the error message.
-- Failed logins are delayed and logged, and the failure message never says which
-  half was wrong.
-- Authorization codes are single-use; a replay is refused even when it arrives
-  with the correct PKCE verifier.
-- Refresh tokens rotate: using an old one fails with `invalid_grant`, which is
-  how stolen-token reuse becomes visible in the log.
-- The HTTP server binds to `127.0.0.1` only. The tunnel is the single way in,
-  which is what makes it reasonable to trust the forwarded-IP header.
-- Every tool call is appended to `remote-audit.log` with the username, the IP,
-  the tool and the SQL.
-
-**The read-only guard is unchanged and still applies.** It comes from the same
-`core.js` both entry points import. `remote-selftest.mjs` re-checks it through
-the HTTP path anyway, because a guard that is only tested on one route is only
-guarded on one route.
-
-## Setting it up
-
-### 1. Install a tunnel
-
-The server listens on localhost; something has to give it a public https name.
-Cloudflare Tunnel is free and needs no inbound firewall rule:
-
-```bash
-winget install Cloudflare.cloudflared
-```
-
-Open a **new** terminal afterwards, or `cloudflared` will not be on the PATH yet.
-
-### 2. Configure
-
-```bash
-copy remote-config.example.json remote-config.json
-```
-
-Set at least a username and a long password. `remote-config.json`,
-`remote-state.json` and `remote-audit.log` are all in `.gitignore` — the first
-holds live credentials, the second the registered OAuth clients, the third who
-asked what.
-
-Worth considering while you are in there:
-
-- **`allowBooks`** — a remote session is allowed to be narrower than a local one.
-  If the question is "how is the group doing", listing the two or three books
-  that answer it is a smaller door than all twenty-one.
-- **`allowCidr`** — set to `160.79.104.0/21` and only Anthropic's servers can
-  reach it. That covers Claude on the web, Desktop and mobile. It blocks Claude
-  Code on another computer, which connects directly from that computer.
-
-### 3. Start it
-
-```bash
-node start-remote.mjs
-```
-
-This starts the tunnel first, reads the address it hands out, then starts the
-server with that address baked in — the order matters, because the public URL
-goes into the OAuth metadata and Claude checks it matches what you typed.
-
-It prints one line to paste into Claude.
-
-### 4. Add the connector in Claude
-
-On the other computer: **Settings → Connectors → Add custom connector**, paste
-the `.../mcp` URL, click Add, then Connect. The login page appears; sign in with
-the username and password from the config. Claude asks once and remembers.
-
-### 5. Ask something
-
-> Which company books are there, and which ones have transactions this year?
-
-If the tools do not appear, work through the troubleshooting list below rather
-than guessing — every failure here has a specific cause.
-
-## Quick tunnel vs named tunnel
-
-`start-remote.mjs` uses a **quick tunnel** by default: no account, no domain, and
-a fresh `*.trycloudflare.com` address every single start.
-
-That address changing is the thing that will annoy you. Each new address means
-removing the connector in Claude and adding it again, because the OAuth metadata
-is bound to the exact URL.
-
-For anything beyond testing, set up a **named tunnel** with a Cloudflare account
-and a domain, then put the stable URL in `remote-config.json` as `publicUrl`.
-`start-remote.mjs` sees it and skips the tunnel step, assuming something else is
-routing that name to the port.
+In public mode, add: single-use authorization codes, rotating refresh tokens,
+delayed and logged login failures whose message never says which half was wrong,
+loopback-with-any-port redirects for Claude Code per RFC 8252, and binding to
+127.0.0.1 so the tunnel is the only way in.
 
 ## Troubleshooting
 
-**"Couldn't reach the MCP server"** — Claude could not find the OAuth metadata.
-Check `https://your-url/.well-known/oauth-protected-resource` in a browser; it
-must return JSON whose `resource` field is *exactly* the URL you typed into
-Claude, including `/mcp`. A trailing slash difference is enough to break it.
+**The other computer cannot reach it at all** — firewall first. From that
+machine: `curl http://<address>:8790/` should return the status page. If it
+times out, the rule in step 3 is missing or the network profile is Public.
 
-**The login page never appears** — the connector URL and `ACCT_PUBLIC_URL` do not
-match. `start-remote.mjs` sets them together, so this usually means a stale
-connector from a previous quick-tunnel address. Remove it and add it again.
-
-**It worked yesterday and not today** — quick tunnels get a new address every
-start. This is the expected outcome, not a fault.
+**`401`** — the token is wrong, or its line was removed from
+`remote-tokens.txt`, or the server was not restarted after the line was added.
 
 **Tools appear but every call errors** — the database, not the transport. Run
-`node selftest.mjs` locally to separate the two.
+`node selftest.mjs` on the server machine to separate the two.
 
-**Everything is refused after a restart** — `remote-state.json` was deleted, so
-the registered clients went with it. Remove the connector in Claude and add it
-again.
+**ZeroTier address does not answer but the LAN one does** — the other machine is
+not joined to the same ZeroTier network, or the member is not authorised in the
+ZeroTier console.
 
-## Running it as a service
+**Everything stops when you close the window** — by design. Ctrl+C and the door
+is gone. If it needs to be always on, run it as a service, but read the next
+section first.
 
-Resist it, at least at first. A tunnel that is always up is a door that is always
-open, and the thing behind it is the company's accounts.
+## Leaving it running
 
-If it does need to be always available, then at minimum: a named tunnel, the
-`allowCidr` allowlist on, `allowBooks` narrowed to what is actually needed, and
-somebody actually reading `remote-audit.log` — an audit log nobody opens is a
-file, not a control.
+The honest position: a server that is always up is a door that is always open,
+and behind it is the company's complete accounts.
+
+If it must be always available, then at minimum — private mode only,
+`ACCT_ALLOW_CIDR` set to the network that should reach it, `allowBooks` narrowed
+to what is actually needed, one token per person so a leak can be traced and
+revoked, and somebody actually reading `remote-audit.log`. An audit log nobody
+opens is a file, not a control.
 
 ## The alternative worth weighing
 
-If the real need is "let people ask about the numbers", the encrypted dashboard
-(`build-site.mjs --lock`, see `dashboard.md`) answers a lot of it with **no
-inbound path to your network at all**. It is a snapshot rather than a live
-connection, so it cannot answer a question nobody anticipated — but nothing can
-reach the database through it, because there is nothing to reach.
+If the real need is "let people see the numbers", the encrypted dashboard
+(`build-site.mjs --lock`, see `dashboard.md`) covers a lot of it with **no
+inbound path to your network at all**. It is a snapshot, so it cannot answer a
+question nobody anticipated — but nothing can reach the database through it,
+because there is nothing to reach.
 
 Live connection for open-ended questions; published snapshot for the regular
-ones. They are not competing, and most groups end up wanting both.
+ones. Most groups end up wanting both.

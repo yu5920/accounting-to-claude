@@ -7,30 +7,40 @@
  * another computer can ask questions about the books.
  *
  * That is a genuinely different risk profile from the stdio version, so this
- * file also implements the lock on the door:
+ * file also implements the lock on the door. There are two doors, because there
+ * are two situations:
  *
- *   - OAuth 2.0 with Dynamic Client Registration and PKCE (S256). This is what
- *     Claude supports out of the box; a fixed bearer token in a header is still
- *     beta and gated, so DCR is the path that works today.
- *   - A login page. Nobody reaches the tools without a username and password
- *     that you set.
- *   - Every tool call is written to an audit log with the user and the SQL.
- *   - Optional company allowlist, so a remote session can be narrower than a
- *     local one.
+ *   Private mode — no ACCT_PUBLIC_URL. Device tokens from remote-tokens.txt.
+ *     Use it over a LAN, or over a private overlay network (ZeroTier, Tailscale)
+ *     to reach the machine from outside the office without putting anything on
+ *     the public internet. This is the mode to prefer.
  *
- * What it does NOT do, and cannot: make this safe to leave running unattended
- * on a public URL forever. The books are real. Start it when you need it.
+ *   Public mode — ACCT_PUBLIC_URL set. Full OAuth 2.0 with Dynamic Client
+ *     Registration and PKCE, because Claude's hosted connectors are fetched by
+ *     Anthropic's servers and those cannot see a private address. Needed only if
+ *     you want to add this as a custom connector on claude.ai or Claude Desktop
+ *     without running bridge.mjs.
+ *
+ * In both modes: the read-only guard from core.js still refuses everything that
+ * is not a SELECT, every tool call is written to an audit log with the caller
+ * and the SQL, and the book allowlist can make a remote session narrower than a
+ * local one.
+ *
+ * What it does NOT do, and cannot: make it safe to leave the books reachable
+ * unattended forever. Start it when it is needed.
  *
  * Environment:
- *   ACCT_PUBLIC_URL        REQUIRED. The https URL Claude will reach, no trailing
- *                          slash, e.g. https://books.example.com
- *   ACCT_REMOTE_USERS      REQUIRED. "alice:password1,bob:password2"
- *   ACCT_REMOTE_PORT       Local port to listen on (default 8790)
+ *   ACCT_REMOTE_PORT       Port to listen on (default 8790)
+ *   ACCT_BIND              Interface (default 0.0.0.0 private, 127.0.0.1 public)
+ *   ACCT_PUBLIC_URL        Set only for public mode; https, no trailing slash
+ *   ACCT_REMOTE_USERS      Public mode logins, "alice:password1,bob:password2"
+ *   ACCT_REMOTE_TOKENS     "name:token,..." — usually use remote-tokens.txt
  *   ACCT_ALLOW_DATABASES   Optional comma list; omit to allow every book
- *   ACCT_ALLOW_CIDR        Optional. Set to 160.79.104.0/21 to accept only
- *                          Anthropic's egress range — this locks out Claude Code
- *                          running on another computer, which connects directly.
+ *   ACCT_ALLOW_CIDR        Optional IP allowlist, e.g. 192.168.0.0/16
+ *   ACCT_TRUST_PROXY       Only when a loopback-bound tunnel sits in front
  *   ...plus whatever the engine needs (ACCT_ENGINE, ACCT_SQL_INSTANCE, ...)
+ *
+ * Tested by remote-selftest-private.mjs and remote-selftest.mjs.
  */
 
 import { createServer as createMcpServer } from "./core.js";
@@ -40,6 +50,7 @@ import { randomBytes, createHash, timingSafeEqual } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, appendFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { networkInterfaces } from "node:os";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -47,15 +58,67 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 // Configuration
 // ---------------------------------------------------------------------------
 
-const PUBLIC_URL = (process.env.ACCT_PUBLIC_URL || "").replace(/\/+$/, "");
 const PORT = Number(process.env.ACCT_REMOTE_PORT) || 8790;
 const STATE_FILE = join(HERE, "remote-state.json");
 const AUDIT_FILE = join(HERE, "remote-audit.log");
+const TOKEN_FILE = join(HERE, "remote-tokens.txt");
 
 const ALLOW_DATABASES = (process.env.ACCT_ALLOW_DATABASES || "")
   .split(",").map((s) => s.trim()).filter(Boolean);
 
 const ALLOW_CIDR = (process.env.ACCT_ALLOW_CIDR || "").trim();
+
+// Trusting a forwarded-IP header is only sound when something in front of us is
+// guaranteed to set it — a tunnel bound to loopback. On a private network the
+// socket address is the truth and the header is just a claim anyone can make.
+const TRUST_PROXY = /^(1|true|yes)$/i.test(process.env.ACCT_TRUST_PROXY || "");
+
+function die(msg) {
+  console.error("\n  " + msg + "\n");
+  process.exit(1);
+}
+
+// ---------------------------------------------------------------------------
+// Two ways in, for two different situations.
+//
+//   Private mode (no ACCT_PUBLIC_URL)
+//     Bearer tokens from remote-tokens.txt, one line per device. Reachable over
+//     a LAN or a private overlay network like ZeroTier or Tailscale — which is
+//     how you get to it from outside the office without exposing anything to
+//     the internet. Claude Code connects directly; bridge.mjs lets Claude
+//     Desktop connect too.
+//
+//   Public mode (ACCT_PUBLIC_URL set)
+//     Full OAuth, because that is what Claude's hosted connectors require: they
+//     are fetched by Anthropic's servers, which cannot see a private address.
+//
+// Tokens work in both modes. The OAuth endpoints only exist in public mode —
+// an authorization server nobody can reach is a liability, not a feature.
+// ---------------------------------------------------------------------------
+
+const PUBLIC_URL = (process.env.ACCT_PUBLIC_URL || "").replace(/\/+$/, "");
+const OAUTH = Boolean(PUBLIC_URL);
+
+const BIND = process.env.ACCT_BIND || (OAUTH ? "127.0.0.1" : "0.0.0.0");
+
+/** "<token>  <who>" per line; # comments and blank lines ignored. */
+function loadTokens() {
+  const out = new Map();
+  for (const pair of (process.env.ACCT_REMOTE_TOKENS || "").split(",")) {
+    const i = pair.indexOf(":");
+    if (i > 0) out.set(pair.slice(i + 1).trim(), pair.slice(0, i).trim());
+  }
+  if (existsSync(TOKEN_FILE)) {
+    for (const line of readFileSync(TOKEN_FILE, "utf8").split(/\r?\n/)) {
+      const t = line.trim();
+      if (!t || t.startsWith("#")) continue;
+      const [tok, ...rest] = t.split(/\s+/);
+      if (tok) out.set(tok, rest.join(" ") || "(unnamed)");
+    }
+  }
+  return out;
+}
+const TOKENS = loadTokens();
 
 const USERS = new Map(
   (process.env.ACCT_REMOTE_USERS || "").split(",").map((pair) => {
@@ -64,33 +127,37 @@ const USERS = new Map(
   }).filter((p) => p && p[0] && p[1])
 );
 
-function die(msg) {
-  console.error("\n  " + msg + "\n");
-  process.exit(1);
+if (OAUTH) {
+  if (!/^https:\/\//.test(PUBLIC_URL) && !/^http:\/\/localhost/.test(PUBLIC_URL)) {
+    die("ACCT_PUBLIC_URL must be https. Claude will not send credentials over http.");
+  }
+  if (!USERS.size && !TOKENS.size) {
+    die("ACCT_REMOTE_USERS is not set. Set it to \"name:password\", for example\n" +
+        "  ACCT_REMOTE_USERS=alice:a-long-passphrase\n" +
+        "  There is no default account on purpose: this exposes real books.");
+  }
+} else if (!TOKENS.size) {
+  die("Refusing to start: there are no access tokens, so anyone who could reach\n" +
+      "  port " + PORT + " would be able to read the complete books.\n\n" +
+      "  Make one:   node make-token.mjs \"boss laptop\"\n\n" +
+      "  That writes a line into remote-tokens.txt. Revoke a device later by\n" +
+      "  deleting its line and restarting.");
 }
 
-if (!PUBLIC_URL) {
-  die("ACCT_PUBLIC_URL is not set. It must be the https URL Claude will reach,\n" +
-      "  for example https://books-abc123.trycloudflare.com (no trailing slash).\n" +
-      "  Claude checks that this matches the URL you type into the connector.");
-}
-if (!/^https:\/\//.test(PUBLIC_URL) && !/^http:\/\/localhost/.test(PUBLIC_URL)) {
-  die("ACCT_PUBLIC_URL must be https. Claude will not send credentials over http.");
-}
-if (!USERS.size) {
-  die('ACCT_REMOTE_USERS is not set. Set it to "name:password", for example\n' +
-      '  ACCT_REMOTE_USERS=alice:a-long-passphrase\n' +
-      "  There is no default account on purpose: this exposes real books.");
-}
 for (const [name, pw] of USERS) {
   if (pw.length < 12) {
-    die(`The password for "${name}" is ${pw.length} characters. This server is\n` +
-        "  reachable from the internet, so use at least 12 — a short one is\n" +
-        "  guessable in the time it takes you to read this message.");
+    die("The password for \"" + name + "\" is " + pw.length + " characters. Use at\n" +
+        "  least 12 — a short one is guessable in the time it takes to read this.");
+  }
+}
+for (const [tok, who] of TOKENS) {
+  if (tok.length < 20) {
+    die("The token for \"" + who + "\" is only " + tok.length + " characters.\n" +
+        "  Use make-token.mjs, which generates a full-length random one.");
   }
 }
 
-const MCP_URL = PUBLIC_URL + "/mcp";
+const MCP_URL = (PUBLIC_URL || "http://<this-machine>:" + PORT) + "/mcp";
 const SCOPE = "accounting.read";
 
 // ---------------------------------------------------------------------------
@@ -143,12 +210,15 @@ function readBody(req, limit = 1_000_000) {
 }
 
 function clientIp(req) {
-  // cloudflared and most tunnels put the real client here. Only the tunnel can
-  // reach our localhost port, so trusting the header is reasonable — but that
-  // is exactly why the port must stay bound to 127.0.0.1.
-  const fwd = req.headers["cf-connecting-ip"] ||
-    String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
-  return fwd || req.socket.remoteAddress || "";
+  // Only read the forwarded header when a proxy in front of us is known to set
+  // it — a tunnel bound to loopback. Reachable directly on a network, the header
+  // is attacker-controlled and the socket address is the only honest answer.
+  if (TRUST_PROXY) {
+    const fwd = req.headers["cf-connecting-ip"] ||
+      String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+    if (fwd) return fwd;
+  }
+  return req.socket.remoteAddress || "";
 }
 
 function ipInCidr(ip, cidr) {
@@ -309,25 +379,38 @@ code{background:rgba(128,128,128,.16);padding:1px 5px;border-radius:4px}</style>
 // ---------------------------------------------------------------------------
 
 function unauthorized(res, description) {
-  const params = [
-    `resource_metadata="${PUBLIC_URL}/.well-known/oauth-protected-resource"`,
-    `scope="${SCOPE}"`,
-  ];
+  // In public mode the 401 has to tell Claude where the login lives, or it can
+  // never start the OAuth flow. In private mode there is no OAuth to point at,
+  // so pointing at it would just send clients down a dead end.
+  const params = OAUTH
+    ? [`resource_metadata="${PUBLIC_URL}/.well-known/oauth-protected-resource"`, `scope="${SCOPE}"`]
+    : [`realm="accounting"`];
   if (description) params.push(`error="invalid_token"`, `error_description="${description}"`);
   res.writeHead(401, {
     "WWW-Authenticate": "Bearer " + params.join(", "),
     "Content-Type": "application/json",
   });
-  res.end(JSON.stringify({ error: "unauthorized", error_description: description || "Sign in required." }));
+  res.end(JSON.stringify({
+    error: "unauthorized",
+    error_description: description ||
+      (OAUTH ? "Sign in required." : "A valid access token is required."),
+  }));
 }
 
 function bearerUser(req) {
-  const h = String(req.headers.authorization || "");
-  const m = /^Bearer\s+(.+)$/i.exec(h);
+  const m = /^Bearer\s+(.+)$/i.exec(String(req.headers.authorization || ""));
   if (!m) return null;
-  const rec = access.get(hash(m[1]));
+  const presented = m[1].trim();
+
+  // A device token from remote-tokens.txt. Compared against every entry so the
+  // work done is the same whether the token exists or not.
+  let who = null;
+  for (const [tok, name] of TOKENS) if (sameSecret(tok, presented)) who = name;
+  if (who) return { user: who, via: "token" };
+
+  const rec = access.get(hash(presented));
   if (!rec || rec.exp < now()) return null;
-  return rec;
+  return { ...rec, via: "oauth" };
 }
 
 /** Names every tool call in the audit log, and blocks books outside the allowlist. */
@@ -388,6 +471,18 @@ const httpServer = createHttpServer(async (req, res) => {
       audit("blocked-ip", { ip: clientIp(req), path });
       res.writeHead(403, { "Content-Type": "text/plain" });
       return res.end("Forbidden\n");
+    }
+
+    // In private mode the OAuth machinery does not exist. Say so plainly rather
+    // than 404ing, so anyone probing gets an answer that explains itself.
+    if (!OAUTH && (path.startsWith("/.well-known/oauth") || path === "/register" ||
+                   path === "/authorize" || path === "/token")) {
+      return sendJson(res, 404, {
+        error: "oauth_not_enabled",
+        error_description:
+          "This server is running in private mode and authenticates with a device " +
+          "token, not OAuth. Send Authorization: Bearer <token>. See remote-mcp.md.",
+      });
     }
 
     // --- discovery -------------------------------------------------------
@@ -545,15 +640,29 @@ const httpServer = createHttpServer(async (req, res) => {
   }
 });
 
-// Bind to loopback only. The tunnel is the single way in, which is also what
-// makes it safe to trust its forwarded-IP header.
-httpServer.listen(PORT, "127.0.0.1", () => {
-  console.log(`
-  Accounting MCP (remote) is listening on http://127.0.0.1:${PORT}
+/** Every address this machine can be reached on, so nobody has to go hunting. */
+function reachableUrls() {
+  if (OAUTH) return [MCP_URL];
+  const out = [];
+  for (const [iface, addrs] of Object.entries(networkInterfaces())) {
+    for (const a of addrs || []) {
+      if (a.family !== "IPv4" || a.internal) continue;
+      out.push(`  http://${a.address}:${PORT}/mcp     (${iface})`);
+    }
+  }
+  out.push(`  http://127.0.0.1:${PORT}/mcp     (this machine only)`);
+  return out;
+}
 
-  Public URL   ${PUBLIC_URL}
-  Connector    ${MCP_URL}
-  Accounts     ${[...USERS.keys()].join(", ")}
+httpServer.listen(PORT, BIND, () => {
+  console.log(`
+  Accounting MCP is listening on ${BIND}:${PORT}   [${OAUTH ? "public / OAuth" : "private / token"}]
+
+  Reach it at:
+${reachableUrls().join("\n")}
+
+  Devices      ${TOKENS.size ? [...TOKENS.values()].join(", ") : "(none)"}${
+    OAUTH && USERS.size ? "\n  Accounts     " + [...USERS.keys()].join(", ") : ""}
   Books        ${ALLOW_DATABASES.length ? ALLOW_DATABASES.join(", ") : "all"}
   IP allowlist ${ALLOW_CIDR || "off"}
   Audit log    ${AUDIT_FILE}
