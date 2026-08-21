@@ -17,6 +17,11 @@ questions.json
 site-credentials.bat
 .env
 
+# Remote MCP: live credentials, registered OAuth clients, audit trail.
+assets/mcp-server/remote-config.json
+assets/mcp-server/remote-state.json
+assets/mcp-server/remote-audit.log
+
 # Packaged skill
 *.skill
 

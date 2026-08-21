@@ -222,6 +222,13 @@ Order of preference, most to least controlled:
    password.
 3. **Unprotected link** — only for genuinely non-sensitive summaries.
 
+To let someone *ask questions* rather than read a page, there is a second
+server: `remote.js` serves the same tools over HTTP behind OAuth, so Claude on
+another computer can reach the books. It is a real door where there was none —
+`references/remote-mcp.md` covers the trade-off, the setup and `remote-selftest.mjs`,
+which checks the lock with 30 mostly-negative tests. Read it before switching it
+on, and raise the exposure question with whoever owns the accounts.
+
 This is a real company's finances. Raise the exposure question yourself rather
 than waiting to be asked, and let them choose.
 
@@ -251,3 +258,4 @@ A finance dashboard that flatters is worse than none.
 | `references/accounting-pitfalls.md` | **Before computing anything.** The traps that produce wrong-but-plausible numbers |
 | `references/dashboard.md` | Building, extending, and laying out the dashboard |
 | `references/budget-3d.md` | Optional R−V=G cost model and break-even analysis |
+| `references/remote-mcp.md` | Reaching the books from another computer, over OAuth |
